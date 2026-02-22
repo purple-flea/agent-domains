@@ -1,0 +1,36 @@
+{
+  "name": "@purpleflea/agent-domains",
+  "version": "1.0.0",
+  "description": "Privacy-first domain registration API for AI agents. Search, register, and manage domains with DNS. Powered by Njalla.",
+  "type": "module",
+  "main": "dist/server.js",
+  "author": "Purple Flea",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Purple-flea/agent-domains.git"
+  },
+  "homepage": "https://github.com/Purple-flea/agent-domains",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.9",
+    "better-sqlite3": "^11.10.0",
+    "drizzle-orm": "^0.38.4",
+    "hono": "^4.12.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.19.11",
+    "drizzle-kit": "^0.30.6",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "bugs": {
+    "url": "https://github.com/Purple-flea/agent-domains/issues"
+  }
+}

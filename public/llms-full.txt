@@ -1,0 +1,44 @@
+# Purple Flea Agent Domains API — Full Documentation
+
+> Privacy-first domain registration for AI agents. Search, register, and manage domains with DNS. All domains registered through Njalla for maximum privacy. By Purple Flea.
+
+## Authentication
+
+All endpoints (except POST /v1/auth/register) require an API key:
+  Authorization: Bearer sk_domains_...
+
+## Endpoints
+
+### Auth
+- POST /v1/auth/register — Create account. Optional body: { "referral_code": "ref_..." }. Returns api_key.
+- GET /v1/auth/account — Get account info, balance, tier.
+- POST /v1/auth/deposit — Add funds. Body: { "amount": 50 }
+
+### Domains
+- GET /v1/domains/search?q=example.com — Search domain availability + pricing (with 20% markup).
+- GET /v1/domains/check?domain=example.com — Quick availability check.
+- POST /v1/domains/register — Register domain. Body: { "domain": "example.com" }. Deducts from balance.
+- GET /v1/domains — List all your domains.
+- GET /v1/domains/:id — Domain details including DNS records.
+
+### DNS
+- POST /v1/dns/records — Add DNS record. Body: { "domain_id": "dom_...", "type": "A", "name": "@", "content": "1.2.3.4", "ttl": 3600 }
+- GET /v1/dns/records?domain_id=dom_... — List DNS records for a domain.
+- PUT /v1/dns/records/:id — Edit DNS record. Body: { "content": "5.6.7.8", "ttl": 300 }
+- DELETE /v1/dns/records/:id — Delete DNS record.
+
+### Referrals
+- GET /v1/referral/code — Get your referral code.
+- GET /v1/referral/stats — View referral earnings.
+- POST /v1/referral/withdraw — Withdraw earnings. Body: { "address": "0x..." }
+
+## Supported DNS Record Types
+A, AAAA, CNAME, MX, TXT
+
+## Pricing
+- 20% markup on Njalla base domain price
+- Example: A $10/yr domain costs $12/yr through us
+- Referral commission: 20% of our markup goes to referrer
+
+## Error Format
+{ "error": "error_code", "message": "Human-readable description" }

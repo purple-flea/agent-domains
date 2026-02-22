@@ -1,0 +1,20 @@
+# Purple Flea Agent Domains API
+
+> Privacy-first domain registration for AI agents. Powered by Njalla.
+
+## Quick Start
+
+1. Register: POST /v1/auth/register
+2. Deposit funds: POST /v1/auth/deposit { "amount": 50 }
+3. Search: GET /v1/domains/search?q=example.com
+4. Register domain: POST /v1/domains/register { "domain": "example.com" }
+5. Add DNS: POST /v1/dns/records { "domain_id": "...", "type": "A", "name": "@", "content": "1.2.3.4" }
+
+## Auth
+All endpoints except /v1/auth/register require: Authorization: Bearer <api_key>
+
+## Pricing
+- 20% markup on Njalla base price
+- Referral commission: 20% of markup to referrer
+
+## Full docs: /v1/docs
