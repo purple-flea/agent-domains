@@ -1448,6 +1448,146 @@ function getRecordTypeNumber(type: string): number {
   return types[type] ?? 0;
 }
 
+// ─── GET /domains/:domain/whois — WHOIS / RDAP lookup (public, no auth required) ───
+
+app.get("/domains/:domain/whois", async (c) => {
+  const domainName = c.req.param("domain").toLowerCase().trim();
+
+  // Basic domain format check
+  if (!domainName || !domainName.includes(".") || domainName.length > 253) {
+    return c.json({ error: "invalid_domain", message: "Provide a valid domain name" }, 400);
+  }
+
+  // Use RDAP (modern REST-based WHOIS) via rdap.org bootstrap
+  // IANA RDAP bootstrap: https://rdap.org redirects to the appropriate registry's RDAP server
+  let rdapData: any = null;
+  let rdapError: string | null = null;
+
+  try {
+    const rdapRes = await fetch(`https://rdap.org/domain/${domainName}`, {
+      headers: { Accept: "application/rdap+json, application/json" },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (rdapRes.ok) {
+      rdapData = await rdapRes.json();
+    } else if (rdapRes.status === 404) {
+      return c.json({
+        domain: domainName,
+        status: "not_registered",
+        available: true,
+        message: "Domain is not registered (RDAP returned 404)",
+        check_availability: `GET /search?domain=${domainName.split(".")[0]}&tld=${domainName.split(".").slice(1).join(".")}`,
+      });
+    } else {
+      rdapError = `RDAP server returned ${rdapRes.status}`;
+    }
+  } catch (e: any) {
+    rdapError = e.message;
+  }
+
+  if (!rdapData) {
+    return c.json({
+      domain: domainName,
+      error: "whois_lookup_failed",
+      message: rdapError ?? "Could not retrieve WHOIS data",
+      note: "Some TLDs may not support RDAP. Try a different lookup service.",
+    }, 502);
+  }
+
+  // Parse RDAP response into a cleaner format
+  const status: string[] = Array.isArray(rdapData.status) ? rdapData.status : [];
+
+  // Extract dates
+  const events: Record<string, string> = {};
+  if (Array.isArray(rdapData.events)) {
+    for (const ev of rdapData.events) {
+      if (ev.eventAction && ev.eventDate) {
+        events[ev.eventAction] = ev.eventDate;
+      }
+    }
+  }
+
+  // Extract nameservers
+  const nameservers: string[] = [];
+  if (Array.isArray(rdapData.nameservers)) {
+    for (const ns of rdapData.nameservers) {
+      if (ns.ldhName) nameservers.push(ns.ldhName.toLowerCase());
+    }
+  }
+
+  // Extract registrar info from entities
+  let registrar: string | null = null;
+  let registrantOrg: string | null = null;
+  let abuseEmail: string | null = null;
+
+  if (Array.isArray(rdapData.entities)) {
+    for (const entity of rdapData.entities) {
+      const roles: string[] = Array.isArray(entity.roles) ? entity.roles : [];
+      const vcard = entity.vcardArray?.[1] ?? [];
+      const name = vcard.find((v: any[]) => v[0] === "fn")?.[3] ?? null;
+      const email = vcard.find((v: any[]) => v[0] === "email")?.[3] ?? null;
+
+      if (roles.includes("registrar")) {
+        registrar = name;
+        if (email) abuseEmail = email;
+        // Check for abuse contact in nested entities
+        const nested = entity.entities ?? [];
+        for (const ne of nested) {
+          const neRoles: string[] = Array.isArray(ne.roles) ? ne.roles : [];
+          if (neRoles.includes("abuse")) {
+            const neVcard = ne.vcardArray?.[1] ?? [];
+            const neEmail = neVcard.find((v: any[]) => v[0] === "email")?.[3] ?? null;
+            if (neEmail) abuseEmail = neEmail;
+          }
+        }
+      }
+      if (roles.includes("registrant")) {
+        registrantOrg = name;
+      }
+    }
+  }
+
+  // Determine expiry status
+  const expiryStr = events["expiration"] ?? null;
+  let expiryStatus: string | null = null;
+  let daysUntilExpiry: number | null = null;
+  if (expiryStr) {
+    const expiry = new Date(expiryStr);
+    const now = new Date();
+    daysUntilExpiry = Math.ceil((expiry.getTime() - now.getTime()) / 86400000);
+    expiryStatus = daysUntilExpiry < 0 ? "expired"
+      : daysUntilExpiry < 30 ? "expiring_soon"
+      : daysUntilExpiry < 90 ? "expiring_in_3_months"
+      : "active";
+  }
+
+  c.header("Cache-Control", "public, max-age=300"); // 5 min cache
+  return c.json({
+    domain: domainName,
+    available: false,
+    status: {
+      rdap_status: status,
+      registration: expiryStatus ?? (status.length > 0 ? "registered" : "unknown"),
+      days_until_expiry: daysUntilExpiry,
+      transferable: !status.includes("client transfer prohibited") && !status.includes("server transfer prohibited"),
+      locked: status.includes("client transfer prohibited") || status.includes("server transfer prohibited"),
+    },
+    registrar: registrar ?? rdapData.port43 ?? null,
+    registrant: registrantOrg ?? "[privacy protected]",
+    nameservers,
+    dates: {
+      registered: events["registration"] ?? null,
+      last_changed: events["last changed"] ?? null,
+      expires: events["expiration"] ?? null,
+    },
+    abuse_contact: abuseEmail,
+    rdap_url: rdapData.links?.find((l: any) => l.rel === "self")?.href ?? null,
+    source: "RDAP (Registration Data Access Protocol)",
+    note: "Registrant details may be privacy-protected. RDAP is the modern replacement for WHOIS.",
+  });
+});
+
 // ─── GET /domains/:domain ───
 
 app.get("/domains/:domain", requireAuth, async (c) => {
