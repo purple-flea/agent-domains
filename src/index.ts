@@ -635,6 +635,37 @@ app.get("/domains/expiring", requireAuth, (c) => {
   });
 });
 
+// ─── PUT /domains/:domain/auto-renew — toggle auto-renewal ───
+
+app.put("/domains/:domain/auto-renew", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domainName = c.req.param("domain").toLowerCase();
+
+  const dbDomain = getDomainForAgent(domainName, agentId);
+  if (!dbDomain) {
+    return c.json({ error: "not_found", message: "Domain not found or doesn't belong to you" }, 404);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  if (typeof body.enabled !== "boolean") {
+    return c.json({ error: "invalid_body", message: "Provide { enabled: true } or { enabled: false }" }, 400);
+  }
+
+  const newValue = body.enabled ? 1 : 0;
+  sqlite.prepare("UPDATE domains SET auto_renew = ? WHERE domain_name = ? AND agent_id = ?")
+    .run(newValue, domainName, agentId);
+
+  return c.json({
+    domain: domainName,
+    auto_renew: body.enabled,
+    message: body.enabled
+      ? `Auto-renewal enabled. Domain will be automatically renewed before expiry.`
+      : `Auto-renewal disabled. Remember to renew ${domainName} manually before it expires.`,
+    expires_at: dbDomain.expiry ?? null,
+    renew_manually: `POST /domains/purchase { "domain": "${domainName}" }`,
+  });
+});
+
 // ─── GET /domains/:domain/health — DNS + HTTP reachability check ───
 
 app.get("/domains/:domain/health", requireAuth, async (c) => {

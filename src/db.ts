@@ -44,6 +44,12 @@ CREATE INDEX IF NOT EXISTS idx_ref_earnings_referrer ON referral_earnings(referr
 
 export function runMigrations() {
   sqlite.exec(migrations);
+  // Add auto_renew column if it doesn't exist (SQLite doesn't support IF NOT EXISTS for columns)
+  try {
+    sqlite.exec("ALTER TABLE domains ADD COLUMN auto_renew INTEGER NOT NULL DEFAULT 1");
+  } catch {
+    // Column already exists — ignore
+  }
 }
 
 // ─── Agent queries ───
@@ -145,6 +151,7 @@ export interface Domain {
   expiry: string | null;
   registered_at: number;
   njalla_registered: number;
+  auto_renew: number; // 1=enabled, 0=disabled (added via ALTER TABLE migration)
 }
 
 export interface ReferralEarning {
