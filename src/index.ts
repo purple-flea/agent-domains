@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { randomBytes } from "crypto";
+import tls from "tls";
 import { v4 as uuidv4 } from "uuid";
 import {
   runMigrations,
@@ -1447,6 +1448,150 @@ function getRecordTypeNumber(type: string): number {
   const types: Record<string, number> = { A: 1, NS: 2, CNAME: 5, MX: 15, TXT: 16, AAAA: 28 };
   return types[type] ?? 0;
 }
+
+// ─── GET /domains/:domain/ssl — TLS certificate details checker (public, no auth) ───
+
+app.get("/domains/:domain/ssl", async (c) => {
+  const domainName = c.req.param("domain").toLowerCase().trim();
+  const port = parseInt(c.req.query("port") ?? "443", 10) || 443;
+
+  if (!domainName || !domainName.includes(".")) {
+    return c.json({ error: "invalid_domain", message: "Provide a valid domain name" }, 400);
+  }
+
+  // Connect via TLS and get certificate details
+  const certInfo = await new Promise<{
+    subject: Record<string, string>;
+    issuer: Record<string, string>;
+    valid_from: string;
+    valid_to: string;
+    fingerprint: string;
+    serialNumber: string;
+    subjectAltNames: string[];
+    authorized: boolean;
+    authError: string | null;
+  } | null>((resolve) => {
+    const timeout = setTimeout(() => resolve(null), 8000);
+
+    const socket = tls.connect({
+      host: domainName,
+      port,
+      servername: domainName,
+      rejectUnauthorized: false, // We check manually
+      timeout: 7000,
+    }, () => {
+      clearTimeout(timeout);
+      try {
+        const cert = socket.getPeerCertificate(true);
+        const authorized = socket.authorized;
+        const authError = socket.authorizationError ? String(socket.authorizationError) : null;
+
+        // Extract SAN
+        const san: string[] = [];
+        const sanRaw = (cert as any).subjectaltname ?? "";
+        for (const entry of sanRaw.split(", ")) {
+          if (entry.startsWith("DNS:")) san.push(entry.slice(4));
+        }
+
+        resolve({
+          subject: cert.subject as Record<string, string>,
+          issuer: cert.issuer as Record<string, string>,
+          valid_from: cert.valid_from,
+          valid_to: cert.valid_to,
+          fingerprint: cert.fingerprint,
+          serialNumber: cert.serialNumber ?? "",
+          subjectAltNames: san,
+          authorized,
+          authError,
+        });
+      } catch {
+        resolve(null);
+      } finally {
+        socket.destroy();
+      }
+    });
+
+    socket.on("error", () => {
+      clearTimeout(timeout);
+      resolve(null);
+    });
+  });
+
+  if (!certInfo) {
+    return c.json({
+      domain: domainName,
+      port,
+      ssl: false,
+      error: "connection_failed",
+      message: "Could not establish TLS connection. Domain may not have SSL or be unreachable.",
+      tip: "Ensure the domain has SSL configured and is reachable on port 443.",
+    });
+  }
+
+  // Parse dates
+  const validFrom = new Date(certInfo.valid_from);
+  const validTo = new Date(certInfo.valid_to);
+  const now = new Date();
+  const daysUntilExpiry = Math.ceil((validTo.getTime() - now.getTime()) / 86400000);
+  const daysOld = Math.ceil((now.getTime() - validFrom.getTime()) / 86400000);
+
+  // Determine cert status
+  const expired = daysUntilExpiry < 0;
+  const expiringSoon = daysUntilExpiry < 14 && !expired;
+  const status = expired ? "expired"
+    : expiringSoon ? "expiring_soon"
+    : !certInfo.authorized ? "invalid_cert"
+    : "valid";
+
+  // Check if domain matches cert (covers wildcards)
+  const certCovers = certInfo.subjectAltNames.some(san => {
+    if (san === domainName) return true;
+    if (san.startsWith("*.")) {
+      const base = san.slice(2);
+      return domainName.endsWith("." + base) && !domainName.slice(0, domainName.length - base.length - 1).includes(".");
+    }
+    return false;
+  }) || certInfo.subject.CN === domainName || certInfo.subject.CN === `*.${domainName.split(".").slice(1).join(".")}`;
+
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({
+    domain: domainName,
+    port,
+    ssl: true,
+    status,
+    certificate: {
+      subject_cn: certInfo.subject.CN ?? null,
+      issuer: {
+        organization: certInfo.issuer.O ?? null,
+        common_name: certInfo.issuer.CN ?? null,
+        country: certInfo.issuer.C ?? null,
+      },
+      valid_from: validFrom.toISOString(),
+      valid_to: validTo.toISOString(),
+      days_until_expiry: daysUntilExpiry,
+      days_since_issued: daysOld,
+      fingerprint_sha1: certInfo.fingerprint,
+      serial_number: certInfo.serialNumber,
+      subject_alt_names: certInfo.subjectAltNames,
+      covers_domain: certCovers,
+    },
+    trust: {
+      browser_trusted: certInfo.authorized,
+      auth_error: certInfo.authError,
+    },
+    warnings: [
+      ...(expired ? ["EXPIRED: Certificate has expired"] : []),
+      ...(expiringSoon ? [`EXPIRING SOON: Certificate expires in ${daysUntilExpiry} days`] : []),
+      ...(!certCovers ? [`Domain mismatch: Certificate does not cover ${domainName}`] : []),
+      ...(!certInfo.authorized ? [`Untrusted: ${certInfo.authError}`] : []),
+    ],
+    tip: expired || expiringSoon
+      ? "Renew your SSL certificate. Let's Encrypt is free via Certbot or your hosting provider."
+      : !certCovers
+      ? "Request a new certificate that includes this domain in the Subject Alternative Names (SANs)."
+      : "Certificate is valid and trusted.",
+  });
+});
 
 // ─── GET /domains/:domain/whois — WHOIS / RDAP lookup (public, no auth required) ───
 
