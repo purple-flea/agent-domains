@@ -187,9 +187,13 @@ app.get("/", (c) =>
   })
 );
 
+// ─── Rate limits ───
+app.use("/register", rateLimit(10, 60_000));          // 10 registrations/min per IP
+app.use("/domains/purchase", rateLimit(5, 60_000));   // 5 domain purchases/min per IP
+app.use("/search", rateLimit(60, 60_000));             // 60 searches/min per IP
+
 // ─── POST /register ───
 
-app.use("/register", rateLimit(10, 60_000));
 app.post("/register", async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
