@@ -51,6 +51,67 @@ app.get("/search", async (c) => {
   }
 });
 
+// ─── Bulk check availability (up to 20 domains in parallel) ───
+app.post("/bulk-check", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const domains: unknown = body.domains;
+
+  if (!Array.isArray(domains) || domains.length === 0) {
+    return c.json({ error: "invalid_domains", message: "Provide { domains: [\"example.com\", ...] }" }, 400);
+  }
+
+  if (domains.length > 20) {
+    return c.json({ error: "too_many_domains", message: "Maximum 20 domains per bulk-check call" }, 400);
+  }
+
+  const names = (domains as string[]).map((d) => String(d).toLowerCase().trim()).filter(Boolean);
+
+  const results = await Promise.allSettled(
+    names.map(async (domain) => {
+      const result = await checkAvailability(domain);
+      return { domain, ...result };
+    })
+  );
+
+  const checked = results.map((r, i) => {
+    if (r.status === "fulfilled") {
+      const v = r.value;
+      return {
+        domain: names[i],
+        available: v.available,
+        base_price_eur: v.price ?? null,
+        price_eur: v.priceWithMarkup ?? null,
+        ...(v.available ? { register: `POST /v1/domains/register { "domain": "${names[i]}" }` } : {}),
+        error: null as string | null,
+      };
+    } else {
+      return {
+        domain: names[i],
+        available: false,
+        base_price_eur: null as number | null,
+        price_eur: null as number | null,
+        error: "lookup_failed" as string | null,
+      };
+    }
+  });
+
+  const availableCount = checked.filter(r => r.available).length;
+  const errorCount = checked.filter(r => r.error).length;
+
+  return c.json({
+    total: checked.length,
+    available: availableCount,
+    unavailable: checked.length - availableCount - errorCount,
+    errors: errorCount,
+    currency: "EUR",
+    markup: `${MARKUP_PERCENTAGE}%`,
+    results: checked.map(r => {
+      const { error, ...rest } = r;
+      return error ? { ...rest, error } : rest;
+    }),
+  });
+});
+
 // ─── Check availability ───
 app.get("/check", async (c) => {
   const domain = c.req.query("domain");
