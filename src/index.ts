@@ -365,12 +365,22 @@ app.post("/domains/purchase", requireAuth, async (c) => {
   const domainId = uuidv4();
   insertDomain(domainId, agentId, domain, expiry, njallaOk ? 1 : 0);
 
-  // Referral credit (15% of purchase)
+  // Referral credit (15% of purchase, 3-level chain: L1=100%, L2=50%, L3=25%)
   if (freshAgent.referrer_id) {
-    const referralAmount = Math.round(totalCost * 0.15 * 100) / 100;
-    const referralId = uuidv4();
-    insertReferralEarning(referralId, freshAgent.referrer_id, agentId, domain, referralAmount);
-    creditAgent(freshAgent.referrer_id, referralAmount);
+    const levelMultipliers = [1.0, 0.5, 0.25];
+    let currentReferredId: string = agentId;
+    let currentReferrerId: string | undefined = freshAgent.referrer_id;
+    for (let level = 0; level < 3 && currentReferrerId; level++) {
+      const levelAmount = Math.round(totalCost * 0.15 * levelMultipliers[level] * 100) / 100;
+      if (levelAmount >= 0.01) {
+        const referralId = uuidv4();
+        insertReferralEarning(referralId, currentReferrerId, currentReferredId, domain, levelAmount);
+        creditAgent(currentReferrerId, levelAmount);
+      }
+      const nextAgent = getAgentById(currentReferrerId);
+      currentReferredId = currentReferrerId;
+      currentReferrerId = nextAgent?.referrer_id ?? undefined;
+    }
   }
 
   const updatedAgent = getAgentById(agentId)!;
