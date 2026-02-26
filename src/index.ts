@@ -140,9 +140,26 @@ app.use("/openapi.json", serveStatic({ path: "public/openapi.json" }));
 
 // ─── Health ───
 
-app.get("/health", (c) =>
-  c.json({ status: "ok", service: "agent-domains", version: "1.0.0" })
-);
+const startTime = Date.now();
+app.get("/health", (c) => {
+  let dbStatus = "ok";
+  let registeredAgents = 0;
+  try {
+    const result = sqlite.prepare("SELECT COUNT(*) as count FROM agents").get() as { count: number };
+    registeredAgents = result.count;
+  } catch {
+    dbStatus = "error";
+  }
+  return c.json({
+    status: "ok",
+    service: "agent-domains",
+    version: "1.0.0",
+    uptime_seconds: Math.floor((Date.now() - startTime) / 1000),
+    database: dbStatus,
+    registered_agents: registeredAgents,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // ─── Root ───
 
