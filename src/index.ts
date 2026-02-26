@@ -560,13 +560,78 @@ app.post("/domains/purchase", requireAuth, async (c) => {
 app.get("/domains", requireAuth, (c) => {
   const agentId = c.get("agentId");
   const domains = getDomainsByAgent(agentId);
-  return c.json({
-    domains: domains.map((d) => ({
+
+  const now = new Date();
+  const enriched = domains.map((d) => {
+    let daysUntilExpiry: number | null = null;
+    let expiryWarning: string | null = null;
+
+    if (d.expiry) {
+      const expiryDate = new Date(d.expiry);
+      if (!isNaN(expiryDate.getTime())) {
+        daysUntilExpiry = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysUntilExpiry < 0) expiryWarning = "EXPIRED";
+        else if (daysUntilExpiry < 7) expiryWarning = `Expires in ${daysUntilExpiry} day(s) — renew immediately`;
+        else if (daysUntilExpiry < 30) expiryWarning = `Expires in ${daysUntilExpiry} days — consider renewing soon`;
+      }
+    }
+
+    return {
       domain_name: d.domain_name,
       status: d.status,
       expiry: d.expiry,
+      days_until_expiry: daysUntilExpiry,
+      expiry_warning: expiryWarning,
       registered_at: new Date(d.registered_at * 1000).toISOString(),
-    })),
+    };
+  });
+
+  const expiringSoon = enriched.filter(d => d.days_until_expiry !== null && d.days_until_expiry < 30);
+
+  return c.json({
+    total: enriched.length,
+    expiring_soon_count: expiringSoon.length,
+    domains: enriched,
+    ...(expiringSoon.length > 0 ? { alert: `${expiringSoon.length} domain(s) expiring within 30 days` } : {}),
+  });
+});
+
+// ─── GET /domains/expiring — domains expiring within N days (default 30) ───
+
+app.get("/domains/expiring", requireAuth, (c) => {
+  const agentId = c.get("agentId");
+  const days = Math.min(parseInt(c.req.query("days") || "30", 10), 365);
+  const domains = getDomainsByAgent(agentId);
+
+  const now = new Date();
+  const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+
+  const expiring = domains
+    .map((d) => {
+      if (!d.expiry) return null;
+      const expiryDate = new Date(d.expiry);
+      if (isNaN(expiryDate.getTime())) return null;
+      const daysLeft = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (expiryDate > cutoff && daysLeft >= 0) return null;
+      return {
+        domain_name: d.domain_name,
+        status: d.status,
+        expiry: d.expiry,
+        days_until_expiry: daysLeft,
+        urgency: daysLeft < 0 ? "expired" : daysLeft < 7 ? "critical" : daysLeft < 30 ? "soon" : "upcoming",
+        renewal_hint: `POST /domains/purchase { "domain": "${d.domain_name}", "years": 1 }`,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a!.days_until_expiry ?? 0) - (b!.days_until_expiry ?? 0));
+
+  return c.json({
+    filter_days: days,
+    count: expiring.length,
+    domains: expiring,
+    note: expiring.length === 0
+      ? `No domains expiring within ${days} days.`
+      : `Renew these domains at POST /domains/purchase`,
   });
 });
 
