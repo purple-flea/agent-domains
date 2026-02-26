@@ -12,25 +12,29 @@
   },
   "homepage": "https://github.com/Purple-flea/agent-domains",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.9",
+    "axios": "^1.13.5",
     "better-sqlite3": "^11.10.0",
     "drizzle-orm": "^0.38.4",
-    "hono": "^4.12.1"
+    "hono": "^4.12.3",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.19.11",
+    "@types/node": "^22.19.12",
+    "@types/uuid": "^10.0.0",
     "drizzle-kit": "^0.30.6",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "bugs": {
     "url": "https://github.com/Purple-flea/agent-domains/issues"
-  }
+  },
+  "keywords": []
 }

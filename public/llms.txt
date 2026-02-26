@@ -1,20 +1,38 @@
-# Purple Flea Agent Domains API
-
-> Privacy-first domain registration for AI agents. Powered by Njalla.
+# Purple Flea Domains
+AI agents can register, manage, and configure domains with crypto payments.
 
 ## Quick Start
-
-1. Register: POST /v1/auth/register
-2. Deposit funds: POST /v1/auth/deposit { "amount": 50 }
-3. Search: GET /v1/domains/search?q=example.com
-4. Register domain: POST /v1/domains/register { "domain": "example.com" }
-5. Add DNS: POST /v1/dns/records { "domain_id": "...", "type": "A", "name": "@", "content": "1.2.3.4" }
-
-## Auth
-All endpoints except /v1/auth/register require: Authorization: Bearer <api_key>
+1. POST /register to get your API key
+2. GET /search?name=yourdomain.com to check availability
+3. POST /domains/purchase with {"domain":"yourdomain.com"}
+4. POST /domains/yourdomain.com/records with {"type":"A","name":"@","content":"1.2.3.4"}
 
 ## Pricing
-- 20% markup on Njalla base price
-- Referral commission: 20% of markup to referrer
+.com $18/yr | .io $54/yr | .ai $102/yr | .xyz $14.40/yr
+Full list: GET /tlds
 
-## Full docs: /v1/docs
+## Payment
+Deposit USDC on Base network. POST /wallet/deposit for address.
+
+## Referral Program
+Earn 15% of every domain purchase by agents you refer.
+Your referral code: use your agent_id when others POST /register
+
+## All Endpoints
+GET  /health
+GET  /tlds
+GET  /search?name=
+POST /register
+POST /wallet/deposit
+GET  /wallet/balance
+POST /domains/purchase
+GET  /domains
+GET  /domains/:domain
+GET  /domains/:domain/records
+POST /domains/:domain/records
+PUT  /domains/:domain/records/:id
+DELETE /domains/:domain/records/:id
+GET  /referrals
+
+## Base URL
+https://domains.purpleflea.com

@@ -1,0 +1,485 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Purple Flea Agent Domains API",
+    "description": "Domain registration and DNS management API for AI agents. Register domains, manage DNS records, and pay with USDC on Base.",
+    "version": "1.0.0",
+    "contact": {
+      "url": "https://purpleflea.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://domains.purpleflea.com",
+      "description": "Production"
+    }
+  ],
+  "security": [],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key obtained from POST /register"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      },
+      "DnsRecord": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "type": { "type": "string", "enum": ["A", "AAAA", "CNAME", "MX", "TXT", "NS"] },
+          "content": { "type": "string" },
+          "ttl": { "type": "integer" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "operationId": "getHealth",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "service": { "type": "string", "example": "agent-domains" },
+                    "version": { "type": "string", "example": "1.0.0" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/register": {
+      "post": {
+        "summary": "Register a new agent account",
+        "operationId": "register",
+        "tags": ["Auth"],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "referral_code": {
+                    "type": "string",
+                    "description": "Referrer's agent_id for referral commission"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "api_key": { "type": "string", "example": "sk_domains_..." },
+                    "agent_id": { "type": "string" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tlds": {
+      "get": {
+        "summary": "List supported TLDs and prices",
+        "operationId": "getTlds",
+        "tags": ["Domains"],
+        "responses": {
+          "200": {
+            "description": "TLD pricing list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tlds": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tld": { "type": "string", "example": ".com" },
+                          "price_usdc": { "type": "number", "example": 18 },
+                          "price_per_year": { "type": "boolean", "example": true }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "summary": "Check domain availability",
+        "operationId": "searchDomain",
+        "tags": ["Domains"],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "example": "example.com"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Domain availability result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domain": { "type": "string" },
+                    "available": { "type": "boolean" },
+                    "price_usdc": { "type": "number", "nullable": true },
+                    "tld": { "type": "string" },
+                    "note": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/deposit": {
+      "post": {
+        "summary": "Get USDC deposit address",
+        "operationId": "walletDeposit",
+        "tags": ["Wallet"],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Deposit instructions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deposit_address": { "type": "string" },
+                    "chain": { "type": "string", "example": "Base" },
+                    "token": { "type": "string", "example": "USDC" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/balance": {
+      "get": {
+        "summary": "Get agent USDC balance",
+        "operationId": "walletBalance",
+        "tags": ["Wallet"],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Current balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "balance_usdc": { "type": "number" },
+                    "agent_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/domains/purchase": {
+      "post": {
+        "summary": "Purchase a domain",
+        "operationId": "purchaseDomain",
+        "tags": ["Domains"],
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["domain"],
+                "properties": {
+                  "domain": { "type": "string", "example": "myagent.com" },
+                  "years": { "type": "integer", "minimum": 1, "maximum": 10, "default": 1 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Domain purchased",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domain": { "type": "string" },
+                    "status": { "type": "string" },
+                    "cost_usdc": { "type": "number" },
+                    "balance_remaining": { "type": "number" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "402": { "description": "Insufficient balance" },
+          "409": { "description": "Domain already registered" }
+        }
+      }
+    },
+    "/domains": {
+      "get": {
+        "summary": "List your domains",
+        "operationId": "listDomains",
+        "tags": ["Domains"],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of domains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domains": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "domain_name": { "type": "string" },
+                          "status": { "type": "string" },
+                          "expiry": { "type": "string", "nullable": true },
+                          "registered_at": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/domains/{domain}": {
+      "get": {
+        "summary": "Get domain details",
+        "operationId": "getDomain",
+        "tags": ["Domains"],
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "domain", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Domain details" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/domains/{domain}/records": {
+      "get": {
+        "summary": "List DNS records",
+        "operationId": "listRecords",
+        "tags": ["DNS"],
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "domain", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "DNS records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "records": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/DnsRecord" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a DNS record",
+        "operationId": "addRecord",
+        "tags": ["DNS"],
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "domain", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["type", "name", "content"],
+                "properties": {
+                  "type": { "type": "string", "enum": ["A", "AAAA", "CNAME", "MX", "TXT", "NS"] },
+                  "name": { "type": "string", "example": "@" },
+                  "content": { "type": "string", "example": "1.2.3.4" },
+                  "ttl": { "type": "integer", "default": 300 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Record added",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DnsRecord" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/domains/{domain}/records/{id}": {
+      "put": {
+        "summary": "Update a DNS record (remove + re-add)",
+        "operationId": "updateRecord",
+        "tags": ["DNS"],
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "domain", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["type", "name", "content"],
+                "properties": {
+                  "type": { "type": "string", "enum": ["A", "AAAA", "CNAME", "MX", "TXT", "NS"] },
+                  "name": { "type": "string" },
+                  "content": { "type": "string" },
+                  "ttl": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Record updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DnsRecord" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a DNS record",
+        "operationId": "deleteRecord",
+        "tags": ["DNS"],
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "domain", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Record removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/referrals": {
+      "get": {
+        "summary": "Get referral stats",
+        "operationId": "getReferrals",
+        "tags": ["Referrals"],
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Referral information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "referral_code": { "type": "string", "description": "Your agent_id — share this for referrals" },
+                    "earnings_usdc": { "type": "number" },
+                    "referred_count": { "type": "integer" },
+                    "domains_purchased": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    { "name": "System", "description": "Health and metadata" },
+    { "name": "Auth", "description": "Account registration" },
+    { "name": "Wallet", "description": "USDC balance and deposits" },
+    { "name": "Domains", "description": "Domain search, purchase, and management" },
+    { "name": "DNS", "description": "DNS record management" },
+    { "name": "Referrals", "description": "Referral program" }
+  ]
+}
