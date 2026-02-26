@@ -635,6 +635,108 @@ app.get("/domains/expiring", requireAuth, (c) => {
   });
 });
 
+// ─── GET /domains/auto-renew — view auto-renewal status for all domains ───
+
+app.get("/domains/auto-renew", requireAuth, (c) => {
+  const agentId = c.get("agentId");
+  const domains = getDomainsByAgent(agentId);
+
+  if (domains.length === 0) {
+    return c.json({
+      total: 0,
+      domains: [],
+      note: "No domains registered. Purchase at POST /domains/purchase",
+    });
+  }
+
+  const now = new Date();
+  const enriched = domains.map((d) => {
+    let daysUntilExpiry: number | null = null;
+    if (d.expiry) {
+      const expiryDate = new Date(d.expiry);
+      if (!isNaN(expiryDate.getTime())) {
+        daysUntilExpiry = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      }
+    }
+    return {
+      domain: d.domain_name,
+      auto_renew: d.auto_renew === 1,
+      expiry: d.expiry ?? null,
+      days_until_expiry: daysUntilExpiry,
+      risk: daysUntilExpiry !== null
+        ? (daysUntilExpiry < 0 ? "expired"
+          : daysUntilExpiry < 14 ? "critical"
+          : daysUntilExpiry < 60 ? "soon"
+          : "ok")
+        : "unknown",
+      manage: `PUT /domains/${d.domain_name}/auto-renew { "enabled": true }`,
+    };
+  });
+
+  const autoRenewEnabled = enriched.filter(d => d.auto_renew).length;
+  const atRisk = enriched.filter(d => d.risk === "critical" || d.risk === "expired");
+  const withoutAutoRenew = enriched.filter(d => !d.auto_renew && d.risk !== "ok");
+
+  return c.json({
+    total: enriched.length,
+    auto_renew_enabled: autoRenewEnabled,
+    auto_renew_disabled: enriched.length - autoRenewEnabled,
+    at_risk: atRisk.length,
+    domains: enriched.sort((a, b) => (a.days_until_expiry ?? 9999) - (b.days_until_expiry ?? 9999)),
+    recommendations: [
+      ...(withoutAutoRenew.length > 0
+        ? [`${withoutAutoRenew.length} domain(s) expiring without auto-renewal. Enable: POST /domains/auto-renew/bulk { "enabled": true }`]
+        : []),
+      ...(atRisk.length > 0
+        ? [`${atRisk.length} domain(s) at critical risk. Renew immediately: POST /domains/purchase`]
+        : []),
+    ],
+    bulk_manage: "POST /domains/auto-renew/bulk { \"enabled\": true } to enable for all domains",
+  });
+});
+
+// ─── POST /domains/auto-renew/bulk — set auto-renewal for all domains at once ───
+
+app.post("/domains/auto-renew/bulk", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domains = getDomainsByAgent(agentId);
+
+  if (domains.length === 0) {
+    return c.json({ error: "no_domains", message: "No domains to update" }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  if (typeof body.enabled !== "boolean") {
+    return c.json({ error: "invalid_body", message: "Provide { enabled: true } or { enabled: false }" }, 400);
+  }
+
+  const newValue = body.enabled ? 1 : 0;
+  const updated: string[] = [];
+  const skipped: string[] = [];
+
+  for (const d of domains) {
+    const currentValue = d.auto_renew;
+    if (currentValue === newValue) {
+      skipped.push(d.domain_name);
+      continue;
+    }
+    sqlite.prepare("UPDATE domains SET auto_renew = ? WHERE domain_name = ? AND agent_id = ?")
+      .run(newValue, d.domain_name, agentId);
+    updated.push(d.domain_name);
+  }
+
+  return c.json({
+    action: body.enabled ? "auto_renew_enabled" : "auto_renew_disabled",
+    updated_count: updated.length,
+    skipped_count: skipped.length,
+    updated_domains: updated,
+    skipped_domains: skipped,
+    message: body.enabled
+      ? `Auto-renewal enabled for ${updated.length} domain(s). Domains will renew automatically before expiry.`
+      : `Auto-renewal disabled for ${updated.length} domain(s). Remember to renew manually.`,
+  });
+});
+
 // ─── PUT /domains/:domain/auto-renew — toggle auto-renewal ───
 
 app.put("/domains/:domain/auto-renew", requireAuth, async (c) => {
