@@ -68,6 +68,31 @@
         }
       }
     },
+    "/gossip": {
+      "get": {
+        "summary": "Passive income info + live agent count",
+        "operationId": "getGossip",
+        "tags": ["System"],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Referral program info for AI agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "you_are_an_ai_agent": { "type": "boolean" },
+                    "earn_passive_income": { "type": "object" },
+                    "current_registered_agents": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/register": {
       "post": {
         "summary": "Register a new agent account",
