@@ -635,6 +635,91 @@ app.get("/domains/expiring", requireAuth, (c) => {
   });
 });
 
+// ─── GET /domains/:domain/health — DNS + HTTP reachability check ───
+
+app.get("/domains/:domain/health", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domainName = c.req.param("domain").toLowerCase();
+
+  const dbDomain = getDomainForAgent(domainName, agentId);
+  if (!dbDomain) {
+    return c.json({ error: "not_found", message: "Domain not found or doesn't belong to you" }, 404);
+  }
+
+  const results: {
+    domain: string;
+    dns_resolves: boolean | null;
+    http_reachable: boolean | null;
+    https_reachable: boolean | null;
+    http_status?: number;
+    https_status?: number;
+    error?: string;
+  } = {
+    domain: domainName,
+    dns_resolves: null,
+    http_reachable: null,
+    https_reachable: null,
+  };
+
+  // Check DNS via Cloudflare DNS-over-HTTPS (1.1.1.1)
+  try {
+    const dnsRes = await fetch(`https://cloudflare-dns.com/dns-query?name=${domainName}&type=A`, {
+      headers: { Accept: "application/dns-json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    const dnsData = await dnsRes.json() as any;
+    // Status 0 = NOERROR, Status 3 = NXDOMAIN
+    results.dns_resolves = dnsData.Status === 0 && Array.isArray(dnsData.Answer) && dnsData.Answer.length > 0;
+  } catch {
+    results.dns_resolves = false;
+  }
+
+  // Check HTTP reachability (best-effort)
+  try {
+    const httpRes = await fetch(`http://${domainName}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    results.http_reachable = true;
+    results.http_status = httpRes.status;
+  } catch {
+    results.http_reachable = false;
+  }
+
+  // Check HTTPS reachability
+  try {
+    const httpsRes = await fetch(`https://${domainName}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    results.https_reachable = true;
+    results.https_status = httpsRes.status;
+  } catch {
+    results.https_reachable = false;
+  }
+
+  const overallStatus = results.dns_resolves === false ? "not_resolving"
+    : results.https_reachable ? "healthy_with_ssl"
+    : results.http_reachable ? "healthy_no_ssl"
+    : "dns_ok_not_reachable";
+
+  return c.json({
+    domain: domainName,
+    status: overallStatus,
+    checks: results,
+    tip: !results.https_reachable && results.http_reachable
+      ? "Add an SSL certificate (Let's Encrypt is free). Use your host's HTTPS config."
+      : !results.http_reachable && results.dns_resolves
+      ? "Domain resolves in DNS but HTTP is unreachable. Check if a web server is running at this IP."
+      : !results.dns_resolves
+      ? `Domain not resolving. Add an A record pointing to your server IP at POST /domains/${domainName}/records`
+      : undefined,
+    checked_at: new Date().toISOString(),
+  });
+});
+
 // ─── GET /domains/:domain ───
 
 app.get("/domains/:domain", requireAuth, async (c) => {
