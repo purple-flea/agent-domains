@@ -226,23 +226,93 @@ app.post("/register", async (c) => {
 
 // ─── GET /tlds ───
 
+const TLD_META: Record<string, { category: string; popular?: boolean; note?: string }> = {
+  com: { category: "classic", popular: true, note: "Most trusted TLD" },
+  net: { category: "classic", popular: true, note: "Networking / tech" },
+  org: { category: "classic", note: "Non-profits / communities" },
+  io:  { category: "tech", popular: true, note: "Popular for startups & APIs" },
+  ai:  { category: "tech", popular: true, note: "AI projects — highest demand" },
+  co:  { category: "classic", popular: true, note: "Short for company/commerce" },
+  xyz: { category: "modern", popular: true, note: "Cheap & versatile" },
+  app: { category: "tech", popular: true, note: "Apps and SaaS" },
+  dev: { category: "tech", popular: true, note: "Developers" },
+  vc:  { category: "finance", note: "Venture capital / investment" },
+  cx:  { category: "modern", note: "Customer experience" },
+  club: { category: "community", note: "Communities and DAOs" },
+  site: { category: "modern", note: "Generic website" },
+  online: { category: "modern", note: "Generic online presence" },
+  tech: { category: "tech", note: "Technology companies" },
+  me:   { category: "personal", note: "Personal sites / portfolios" },
+  cc:   { category: "modern", note: "Short alternative to .com" },
+  info: { category: "classic", note: "Information sites" },
+  biz:  { category: "classic", note: "Business sites" },
+};
+
 app.get("/tlds", (c) => {
-  const tlds = Object.entries(TLD_PRICES).map(([tld, price]) => ({
-    tld: `.${tld}`,
-    price_usdc: price,
-    price_per_year: true,
-  }));
-  return c.json({ tlds });
+  const tlds = Object.entries(TLD_PRICES).map(([tld, price]) => {
+    const meta = TLD_META[tld] || { category: "other" };
+    return {
+      tld: `.${tld}`,
+      price_usdc_per_year: price,
+      price_2yr: Math.round(price * 2 * 100) / 100,
+      price_5yr: Math.round(price * 5 * 100) / 100,
+      category: meta.category,
+      popular: meta.popular ?? false,
+      note: meta.note ?? null,
+    };
+  });
+
+  const popular = tlds.filter(t => t.popular);
+  const byCategory = tlds.reduce((acc, t) => {
+    if (!acc[t.category]) acc[t.category] = [];
+    acc[t.category].push(t);
+    return acc;
+  }, {} as Record<string, typeof tlds>);
+
+  return c.json({
+    total_tlds: tlds.length,
+    popular_tlds: popular,
+    by_category: byCategory,
+    all_tlds: tlds,
+    pricing_note: "Prices in USDC. Annual renewal at same rate.",
+    payment: "USDC on Base network. POST /wallet/deposit to fund account.",
+  });
 });
 
 // ─── GET /search ───
+// Supports ?name=example.com (single) or ?name=myproject&tlds=com,io,ai (multi-TLD)
 
 app.get("/search", async (c) => {
   const name = c.req.query("name");
+  const tldsParam = c.req.query("tlds"); // optional: comma-separated TLD list for bulk check
+
   if (!name) {
-    return c.json({ error: "missing_param", message: "Provide ?name=example.com" }, 400);
+    return c.json({ error: "missing_param", message: "Provide ?name=example.com or ?name=myproject&tlds=com,io,ai" }, 400);
   }
 
+  // Multi-TLD search: ?name=myproject&tlds=com,io,ai
+  if (tldsParam && !name.includes(".")) {
+    const requestedTlds = tldsParam.split(",").map(t => t.trim().replace(/^\./, "").toLowerCase());
+    const results = await Promise.all(requestedTlds.map(async (tld) => {
+      const domain = `${name.toLowerCase().trim()}.${tld}`;
+      if (!isValidDomain(domain)) return { domain, available: false, price_usdc: null, tld: `.${tld}`, error: "invalid_domain" };
+      const price = getTldPrice(domain);
+      if (price === null) return { domain, available: false, price_usdc: null, tld: `.${tld}`, error: "unsupported_tld" };
+      const existing = getDomainByName(domain);
+      if (existing) return { domain, available: false, price_usdc: null, tld: `.${tld}` };
+      let available = true;
+      try { await njallaGetDomain(domain); available = false; } catch { available = true; }
+      return { domain, available, price_usdc: available ? price : null, tld: `.${tld}` };
+    }));
+    return c.json({
+      query: name,
+      results,
+      available_count: results.filter(r => r.available).length,
+      note: "Availability is estimated",
+    });
+  }
+
+  // Single domain search
   const domainLower = name.toLowerCase().trim();
   if (!isValidDomain(domainLower)) {
     return c.json({ error: "invalid_domain", message: "Invalid domain name format" }, 400);
@@ -257,7 +327,8 @@ app.get("/search", async (c) => {
       available: false,
       price_usdc: null,
       tld: tld ? `.${tld}` : null,
-      note: "TLD not supported",
+      note: "TLD not supported. GET /tlds for supported TLDs.",
+      supported_tlds: Object.keys(TLD_PRICES).map(t => `.${t}`),
     });
   }
 
@@ -267,9 +338,9 @@ app.get("/search", async (c) => {
     return c.json({
       domain: domainLower,
       available: false,
-      price_usdc: price,
+      price_usdc: null,
       tld: `.${tld}`,
-      note: "Availability is estimated",
+      note: "Already registered in this system",
     });
   }
 
@@ -277,10 +348,8 @@ app.get("/search", async (c) => {
   let available = true;
   try {
     await njallaGetDomain(domainLower);
-    // If no error, domain exists in Njalla → unavailable
     available = false;
   } catch {
-    // Error from Njalla = domain not found = available
     available = true;
   }
 
@@ -288,8 +357,11 @@ app.get("/search", async (c) => {
     domain: domainLower,
     available,
     price_usdc: available ? price : null,
+    price_2yr: available ? Math.round(price * 2 * 100) / 100 : null,
+    price_5yr: available ? Math.round(price * 5 * 100) / 100 : null,
     tld: `.${tld}`,
     note: "Availability is estimated",
+    ...(available ? { next_step: `POST /domains/purchase with {"domain":"${domainLower}"}` } : {}),
   });
 });
 
