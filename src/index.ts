@@ -160,6 +160,12 @@ app.use("/openapi.json", serveStatic({ path: "public/openapi.json" }));
 // ─── favicon.ico — 204 to suppress 404 log noise ───
 app.get("/favicon.ico", (c) => new Response(null, { status: 204 }));
 
+// ─── Ping (ultra-lightweight uptime check) ───
+app.get("/ping", (c) => {
+  c.header("Cache-Control", "no-cache");
+  return c.text("pong");
+});
+
 // ─── Health ───
 
 const startTime = Date.now();
