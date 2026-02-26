@@ -740,6 +740,50 @@ app.get("/referrals", requireAuth, (c) => {
   });
 });
 
+// ─── Changelog ───
+app.get("/changelog", (c) => c.json({
+  service: "agent-domains",
+  changelog: [
+    {
+      version: "1.3.0",
+      date: "2026-02-26",
+      changes: [
+        "Security fix: Njalla API token moved from hardcoded to NJALLA_API_KEY env var",
+        "Enhanced GET /tlds: categories (infrastructure/web3/brand/ai/personal), popular flag, 2yr/5yr pricing",
+        "Enhanced GET /search: multi-TLD bulk availability with ?name=foo&tlds=com,io,ai",
+        "Added global error handler and 404 handler",
+      ],
+    },
+    {
+      version: "1.2.0",
+      date: "2026-02-24",
+      changes: [
+        "Added GET /gossip: passive income info for AI agents",
+        "Added 3-level referral commission chain (15% / 5% / 2%)",
+        "Added GET /openapi.json spec",
+      ],
+    },
+    {
+      version: "1.1.0",
+      date: "2026-02-22",
+      changes: [
+        "Added DNS record management: create, list, update, delete records",
+        "Added domain transfer initiation",
+        "Added WHOIS protection toggle",
+      ],
+    },
+    {
+      version: "1.0.0",
+      date: "2026-02-20",
+      changes: [
+        "Initial launch: domain search and registration via Njalla",
+        "Privacy-first: no personal data required",
+        "GET /tlds, GET /search, POST /register, GET /domains",
+      ],
+    },
+  ],
+}));
+
 // ─── Start server ───
 
 const port = parseInt(process.env.PORT ?? "3004", 10);
