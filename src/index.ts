@@ -109,6 +109,24 @@ const app = new Hono<{ Variables: { agent: Agent; agentId: string } }>();
 app.use("*", cors());
 app.use("*", logger());
 
+// ─── Global error handler ───
+app.onError((err, c) => {
+  const msg = err.message || "Internal server error";
+  console.error(`[error] ${c.req.method} ${c.req.path}: ${msg}`);
+  if (msg.includes("JSON") || msg.includes("json") || msg.includes("parse")) {
+    return c.json({ error: "invalid_json", message: "Request body must be valid JSON" }, 400);
+  }
+  return c.json({ error: "internal_error", message: "An unexpected error occurred" }, 500);
+});
+
+// ─── 404 handler ───
+app.notFound((c) => c.json({
+  error: "not_found",
+  message: `${c.req.method} ${c.req.path} not found`,
+  docs: "https://domains.purpleflea.com/llms.txt",
+  openapi: "/openapi.json",
+}, 404));
+
 // ─── _info metadata middleware ───
 app.use("*", async (c, next) => {
   await next();
