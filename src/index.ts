@@ -737,6 +737,103 @@ app.post("/domains/auto-renew/bulk", requireAuth, async (c) => {
   });
 });
 
+// ─── POST /domains/dns/bulk — update a DNS record across all domains at once ───
+// Useful for: changing server IP, pointing all domains to a new CDN, bulk TXT updates
+
+app.post("/domains/dns/bulk", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domains = getDomainsByAgent(agentId);
+
+  if (domains.length === 0) {
+    return c.json({ error: "no_domains", message: "No domains registered. Purchase at POST /domains/purchase" }, 400);
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_body", message: "Request body must be valid JSON" }, 400);
+  }
+
+  const type = (body.type as string)?.toUpperCase();
+  const name = (body.name as string) ?? "@";
+  const content = body.content as string;
+  const ttl = body.ttl ? Number(body.ttl) : 300;
+
+  // Optional: limit to specific domains
+  const onlyDomains: string[] | undefined = Array.isArray(body.domains)
+    ? (body.domains as string[]).map((d: string) => d.toLowerCase().trim())
+    : undefined;
+
+  if (!type || !VALID_RECORD_TYPES.includes(type)) {
+    return c.json(
+      { error: "invalid_type", message: `type must be one of: ${VALID_RECORD_TYPES.join(", ")}` },
+      400
+    );
+  }
+  if (!content) {
+    return c.json({ error: "missing_content", message: "content is required (e.g. '1.2.3.4' for an A record)" }, 400);
+  }
+
+  const targets = onlyDomains
+    ? domains.filter(d => onlyDomains.includes(d.domain_name))
+    : domains;
+
+  if (targets.length === 0) {
+    return c.json({ error: "no_matching_domains", message: "None of the specified domains belong to you" }, 400);
+  }
+
+  const results = await Promise.allSettled(
+    targets.map(async (d) => {
+      const domainName = d.domain_name;
+      try {
+        // Fetch existing records to find any matching type+name to replace
+        const existingRecords = await njallaListRecords(domainName);
+        const matching = existingRecords.filter(
+          (r: any) => r.type?.toUpperCase() === type && (r.name === name || (name === "@" && r.name === ""))
+        );
+
+        // Remove old matching records
+        for (const old of matching) {
+          await njallaRemoveRecord(domainName, String(old.id));
+        }
+
+        // Add the new record
+        const added = await njallaAddRecord(domainName, type, name, content, ttl);
+        return {
+          domain: domainName,
+          status: "updated",
+          replaced: matching.length,
+          record_id: String(added.id),
+        };
+      } catch (err: any) {
+        return {
+          domain: domainName,
+          status: "failed",
+          error: err.message,
+        };
+      }
+    })
+  );
+
+  const settled = results.map(r => r.status === "fulfilled" ? r.value : { domain: "unknown", status: "failed", error: "Promise rejected" });
+  const updated = settled.filter(r => r.status === "updated");
+  const failed = settled.filter(r => r.status === "failed");
+
+  return c.json({
+    action: "bulk_dns_update",
+    record: { type, name, content, ttl },
+    total_targeted: targets.length,
+    updated_count: updated.length,
+    failed_count: failed.length,
+    results: settled,
+    ...(failed.length > 0 ? { failures: failed } : {}),
+    tip: type === "A"
+      ? `All ${updated.length} domains now point to ${content}. DNS propagation takes up to 48h.`
+      : `Bulk ${type} record update complete across ${updated.length} domain(s).`,
+  });
+});
+
 // ─── PUT /domains/:domain/auto-renew — toggle auto-renewal ───
 
 app.put("/domains/:domain/auto-renew", requireAuth, async (c) => {
