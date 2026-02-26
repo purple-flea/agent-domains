@@ -666,6 +666,81 @@ app.put("/domains/:domain/auto-renew", requireAuth, async (c) => {
   });
 });
 
+// ─── GET /domains/health — batch DNS health check for all agent domains ───
+
+app.get("/domains/health", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domains = getDomainsByAgent(agentId);
+
+  if (domains.length === 0) {
+    return c.json({ total: 0, domains: [], note: "No domains registered" });
+  }
+
+  // Check DNS for all domains in parallel (cap at 10)
+  const toCheck = domains.slice(0, 10);
+  const results = await Promise.allSettled(
+    toCheck.map(async (d) => {
+      const domainName = d.domain_name;
+      let dns_resolves: boolean | null = null;
+      try {
+        const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${domainName}&type=A`, {
+          headers: { Accept: "application/dns-json" },
+          signal: AbortSignal.timeout(4000),
+        });
+        const data = await res.json() as any;
+        dns_resolves = data.Status === 0 && Array.isArray(data.Answer) && data.Answer.length > 0;
+      } catch {
+        dns_resolves = false;
+      }
+
+      // Expiry info
+      const now = new Date();
+      let daysUntilExpiry: number | null = null;
+      if (d.expiry) {
+        const expiryDate = new Date(d.expiry);
+        if (!isNaN(expiryDate.getTime())) {
+          daysUntilExpiry = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        }
+      }
+
+      const overallHealth = !dns_resolves ? "not_resolving"
+        : daysUntilExpiry !== null && daysUntilExpiry < 7 ? "expiring_critical"
+        : daysUntilExpiry !== null && daysUntilExpiry < 30 ? "expiring_soon"
+        : "ok";
+
+      return {
+        domain: domainName,
+        status: d.status,
+        dns_resolves,
+        days_until_expiry: daysUntilExpiry,
+        health: overallHealth,
+        detail: `GET /domains/${domainName}/health for full HTTP/HTTPS check`,
+      };
+    })
+  );
+
+  const checks = results.map(r => r.status === "fulfilled" ? r.value : null).filter(Boolean) as any[];
+  const healthy = checks.filter(c => c.health === "ok").length;
+  const issues = checks.filter(c => c.health !== "ok");
+
+  return c.json({
+    total: domains.length,
+    checked: toCheck.length,
+    healthy_count: healthy,
+    issue_count: issues.length,
+    domains: checks,
+    issues: issues.length > 0 ? issues.map(d => ({
+      domain: d.domain,
+      problem: d.health,
+      fix: d.health === "not_resolving"
+        ? `Add DNS record: POST /domains/${d.domain}/records`
+        : `Renew domain: POST /domains/purchase {"domain":"${d.domain}","years":1}`,
+    })) : null,
+    note: toCheck.length < domains.length ? `Showing first 10 of ${domains.length} domains` : null,
+    checked_at: new Date().toISOString(),
+  });
+});
+
 // ─── GET /domains/:domain/health — DNS + HTTP reachability check ───
 
 app.get("/domains/:domain/health", requireAuth, async (c) => {
