@@ -1163,6 +1163,189 @@ app.get("/domains/transfer-guide", (c) => {
   });
 });
 
+// ─── GET /domains/:domain/seo — SEO and technical health check ───
+
+app.get("/domains/:domain/seo", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domainName = c.req.param("domain").toLowerCase();
+
+  const dbDomain = getDomainForAgent(domainName, agentId);
+  if (!dbDomain) {
+    return c.json({ error: "not_found", message: "Domain not found or doesn't belong to you" }, 404);
+  }
+
+  const checks: {
+    check: string;
+    status: "pass" | "fail" | "warn" | "unknown";
+    detail: string;
+    fix?: string;
+  }[] = [];
+
+  // ─── 1. HTTPS check ───
+  let httpsOk = false;
+  let httpRedirectsToHttps = false;
+  let httpsStatus: number | null = null;
+  let responseTime: number | null = null;
+  try {
+    const start = Date.now();
+    const res = await fetch(`https://${domainName}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    responseTime = Date.now() - start;
+    httpsOk = res.status < 500;
+    httpsStatus = res.status;
+  } catch {
+    httpsOk = false;
+  }
+
+  // Check if HTTP redirects to HTTPS
+  if (!httpsOk) {
+    try {
+      const res = await fetch(`http://${domainName}`, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(5000),
+        redirect: "manual",
+      });
+      const loc = res.headers.get("location") ?? "";
+      httpRedirectsToHttps = loc.startsWith("https://");
+    } catch { /* ignored */ }
+  }
+
+  checks.push({
+    check: "HTTPS",
+    status: httpsOk ? "pass" : httpRedirectsToHttps ? "warn" : "fail",
+    detail: httpsOk
+      ? `HTTPS is live (HTTP ${httpsStatus}${responseTime ? `, ${responseTime}ms` : ""})`
+      : httpRedirectsToHttps
+      ? "HTTP redirects to HTTPS but HTTPS itself is not reachable"
+      : "HTTPS is not configured",
+    fix: !httpsOk ? "Install an SSL certificate (Let's Encrypt is free via Certbot)" : undefined,
+  });
+
+  // ─── 2. robots.txt ───
+  let robotsOk = false;
+  try {
+    const res = await fetch(`https://${domainName}/robots.txt`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    robotsOk = res.status === 200;
+  } catch { /* ignored */ }
+
+  checks.push({
+    check: "robots.txt",
+    status: robotsOk ? "pass" : "warn",
+    detail: robotsOk ? "robots.txt is present" : "robots.txt missing (search engines may not crawl efficiently)",
+    fix: !robotsOk ? `Add /robots.txt to your web server. Minimum: "User-agent: *\\nAllow: /"` : undefined,
+  });
+
+  // ─── 3. sitemap.xml ───
+  let sitemapOk = false;
+  try {
+    const res = await fetch(`https://${domainName}/sitemap.xml`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    sitemapOk = res.status === 200;
+  } catch { /* ignored */ }
+
+  checks.push({
+    check: "sitemap.xml",
+    status: sitemapOk ? "pass" : "warn",
+    detail: sitemapOk ? "sitemap.xml is present" : "sitemap.xml missing — helps search engines index all pages",
+    fix: !sitemapOk ? "Generate and serve a sitemap. Most frameworks have plugins for this." : undefined,
+  });
+
+  // ─── 4. Response time ───
+  if (responseTime !== null) {
+    checks.push({
+      check: "Response time",
+      status: responseTime < 500 ? "pass" : responseTime < 2000 ? "warn" : "fail",
+      detail: `${responseTime}ms (target: <500ms)`,
+      fix: responseTime >= 2000 ? "Slow response. Consider caching, CDN, or server upgrade." : undefined,
+    });
+  } else {
+    checks.push({
+      check: "Response time",
+      status: "unknown",
+      detail: "Could not measure — HTTPS not reachable",
+    });
+  }
+
+  // ─── 5. WWW redirect ───
+  let wwwRedirect: "to_apex" | "to_www" | "both_serve" | "neither" = "neither";
+  try {
+    const res = await fetch(`https://www.${domainName}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5000),
+      redirect: "manual",
+    });
+    const loc = res.headers.get("location") ?? "";
+    if (loc.includes(`https://${domainName}`)) wwwRedirect = "to_apex";
+    else if (res.status === 200) wwwRedirect = "both_serve";
+    else wwwRedirect = "neither";
+  } catch { /* ignored */ }
+
+  checks.push({
+    check: "WWW redirect",
+    status: wwwRedirect === "to_apex" ? "pass"
+      : wwwRedirect === "both_serve" ? "warn" : "unknown",
+    detail: wwwRedirect === "to_apex" ? "www redirects to apex domain (correct)"
+      : wwwRedirect === "both_serve" ? "Both www and apex serve content — may cause duplicate content issues"
+      : "www subdomain not configured or not redirecting",
+    fix: wwwRedirect === "both_serve"
+      ? `Configure www.${domainName} to redirect to ${domainName} (301)`
+      : wwwRedirect === "neither"
+      ? `Add a CNAME for www: POST /domains/${domainName}/records { "type": "CNAME", "name": "www", "content": "@" }`
+      : undefined,
+  });
+
+  // ─── 6. DNS resolution ───
+  let dnsOk = false;
+  try {
+    const res = await fetch(`https://cloudflare-dns.com/dns-query?name=${domainName}&type=A`, {
+      headers: { Accept: "application/dns-json" },
+      signal: AbortSignal.timeout(4000),
+    });
+    const data = await res.json() as any;
+    dnsOk = data.Status === 0 && Array.isArray(data.Answer) && data.Answer.length > 0;
+  } catch { /* ignored */ }
+
+  checks.push({
+    check: "DNS A record",
+    status: dnsOk ? "pass" : "fail",
+    detail: dnsOk ? "A record found — domain resolves" : "No A record — domain not pointing to a server",
+    fix: !dnsOk ? `Add A record: POST /domains/${domainName}/records { "type": "A", "name": "@", "content": "YOUR_SERVER_IP" }` : undefined,
+  });
+
+  const passed = checks.filter(c => c.status === "pass").length;
+  const failed = checks.filter(c => c.status === "fail").length;
+  const warned = checks.filter(c => c.status === "warn").length;
+  const totalChecks = checks.length;
+  const score = Math.round(((passed + warned * 0.5) / totalChecks) * 100);
+
+  const overallStatus = failed > 0 ? "issues_found"
+    : warned > 0 ? "good_with_warnings"
+    : "excellent";
+
+  return c.json({
+    domain: domainName,
+    seo_score: score,
+    status: overallStatus,
+    summary: { passed, warned, failed, total_checks: totalChecks },
+    checks,
+    improvements: checks
+      .filter(ch => ch.status !== "pass" && ch.fix)
+      .map(ch => ({ check: ch.check, issue: ch.detail, action: ch.fix })),
+    tips: [
+      "High-quality content and backlinks are the #1 ranking factor — technical SEO is the foundation",
+      "Submit sitemap to Google Search Console for faster indexing",
+      "Monitor Core Web Vitals (LCP, CLS, FID) via PageSpeed Insights",
+    ],
+    checked_at: new Date().toISOString(),
+  });
+});
+
 // ─── GET /domains/:domain ───
 
 app.get("/domains/:domain", requireAuth, async (c) => {
