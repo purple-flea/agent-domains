@@ -4,8 +4,9 @@
  * Auth: Authorization: Njalla <token>
  */
 
-const NJALLA_BASE = "https://njal.la/api/1/";
-const NJALLA_TOKEN = "b6bbc702ef3f18ee67c4923fbc3b2e48851e5cbc";
+const NJALLA_BASE = process.env.NJALLA_API_URL || "https://njal.la/api/1/";
+const NJALLA_TOKEN = process.env.NJALLA_API_KEY || "";
+if (!NJALLA_TOKEN) console.warn("[WARN] NJALLA_API_KEY not set — domain registration will fail");
 
 // ─── TLD Pricing (USDC, includes 20% markup) ───
 
