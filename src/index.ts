@@ -826,6 +826,144 @@ app.get("/domains/:domain/health", requireAuth, async (c) => {
   });
 });
 
+// ─── GET /domains/transfer-guide ───
+
+app.get("/domains/transfer-guide", (c) => {
+  const domain = c.req.query("domain") ?? "yourdomain.com";
+
+  return c.json({
+    title: "Domain Transfer Guide",
+    description: "Step-by-step instructions for transferring domains in or out of Purple Flea",
+    domain_example: domain,
+
+    transfer_in: {
+      title: "Transfer a domain you own elsewhere → to Purple Flea",
+      overview: "Bring your domain to Purple Flea for privacy-first management via Njalla. Transfers are supported for most gTLDs (.com, .net, .org, .io, .co, etc.)",
+      steps: [
+        {
+          step: 1,
+          action: "Unlock your domain at current registrar",
+          detail: "Log into your current registrar (GoDaddy, Namecheap, etc.) and disable 'domain lock' / 'registrar lock'. This is required before an EPP code can be requested.",
+        },
+        {
+          step: 2,
+          action: "Get the EPP/authorization code",
+          detail: "Request the EPP (Auth) code from your current registrar. It's usually available in domain settings. Check your email — registrars often send it there.",
+        },
+        {
+          step: 3,
+          action: "Ensure WHOIS email is accessible",
+          detail: "The transfer confirmation email goes to the registrant email in WHOIS. Make sure you can receive it. If your email is privacy-protected, temporarily update it to a real address.",
+        },
+        {
+          step: 4,
+          action: "Initiate transfer via Purple Flea API",
+          detail: "Use POST /domains/transfer with your EPP code. Purple Flea will initiate the transfer via Njalla.",
+          api_call: `POST /domains/transfer\n{ "domain": "${domain}", "epp_code": "EPP_CODE_HERE" }`,
+          note: "Transfer fee: typically 1 year renewal cost (~$10-15 for .com). Check GET /tlds for pricing.",
+        },
+        {
+          step: 5,
+          action: "Approve the transfer",
+          detail: "Within 24h, you'll receive an email from the losing registrar to approve the transfer. Approve it immediately to speed up the process. Without approval it auto-completes in 5-7 days.",
+        },
+        {
+          step: 6,
+          action: "Transfer completes",
+          detail: "Transfer takes 5-7 days (or faster if approved). Your domain will appear in GET /domains with Njalla as registrar. DNS records are preserved.",
+        },
+      ],
+      restrictions: [
+        "Domain must be at least 60 days old",
+        "Domain must not have been transferred in the last 60 days",
+        "Domain must not be expired or pending deletion",
+        "ccTLDs (.uk, .au, .de, etc.) have registrar-specific rules — contact support",
+      ],
+      check_eligibility: `GET /domains/transfer-guide?domain=${domain}`,
+    },
+
+    transfer_out: {
+      title: "Transfer a domain from Purple Flea → to another registrar",
+      overview: "You own your domain. You can transfer it away at any time. Purple Flea uses Njalla as the backend registrar.",
+      steps: [
+        {
+          step: 1,
+          action: "Request unlock and EPP code from Purple Flea",
+          detail: "Contact support@purpleflea.com or use the API to request your EPP transfer code. We'll unlock the domain and email you the authorization code.",
+          api_call: `POST /domains/${domain}/unlock\n{}`,
+          note: "If this endpoint is not yet available, email support@purpleflea.com with your agent ID and domain name.",
+        },
+        {
+          step: 2,
+          action: "Initiate transfer at new registrar",
+          detail: "Go to your new registrar (Namecheap, Cloudflare Registrar, etc.) and initiate an inbound transfer. Provide the EPP code when prompted.",
+        },
+        {
+          step: 3,
+          action: "Approve or wait",
+          detail: "You may receive an approval email at the registrant address. Approving speeds up the transfer to ~1 day instead of 5-7 days.",
+        },
+        {
+          step: 4,
+          action: "DNS migration",
+          detail: "Before transferring, export your DNS records: GET /domains/:domain/records. Re-create them at your new registrar's DNS or use a third-party DNS provider (Cloudflare is free).",
+          export_records: `GET /domains/${domain}/records`,
+        },
+      ],
+      important_notes: [
+        "Transferring extends registration by 1 year at most registrars (you pay renewal fee to new registrar)",
+        "DNS propagation takes up to 48h after nameserver change",
+        "Purple Flea retains WHOIS privacy data for 30 days after transfer for compliance",
+      ],
+    },
+
+    nameserver_only_transfer: {
+      title: "Keep domain at Purple Flea, use external DNS (e.g., Cloudflare)",
+      detail: "You don't need to transfer the domain to use external DNS. Just update NS records.",
+      steps: [
+        "Sign up for Cloudflare (free) at cloudflare.com",
+        "Add your domain in Cloudflare — it will auto-import DNS records",
+        "Update your nameservers: POST /domains/:domain/records with type=NS",
+        "DNS changes propagate in 24-48h",
+      ],
+      api_call: `POST /domains/${domain}/records\n{ "type": "NS", "name": "@", "content": "ns1.cloudflare.com", "ttl": 3600 }`,
+    },
+
+    faq: [
+      {
+        q: "How long does a transfer take?",
+        a: "5-7 days on average. Approving the confirmation email reduces this to 1-2 days.",
+      },
+      {
+        q: "Will my website go down during a transfer?",
+        a: "No — DNS records are preserved during transfer. If you change nameservers simultaneously, propagation takes 24-48h.",
+      },
+      {
+        q: "Can I transfer a domain that expires soon?",
+        a: "You can, but transfers extend registration by 1 year. If the domain expires in < 7 days, renew it first: POST /domains/:domain/renew",
+      },
+      {
+        q: "What TLDs support transfers?",
+        a: "Most gTLDs (.com, .net, .org, .io, .co, .app, .dev). Check GET /tlds for the full list. Most ccTLDs (.uk, .de, .au) have special rules.",
+      },
+      {
+        q: "Is my WHOIS information private during transfer?",
+        a: "Yes — Njalla maintains WHOIS privacy throughout the transfer process.",
+      },
+    ],
+
+    useful_endpoints: {
+      "GET /tlds": "Pricing for all supported TLDs",
+      "GET /domains": "List your domains",
+      "GET /domains/:domain": "Domain details and status",
+      "GET /domains/:domain/records": "Export DNS records",
+      "POST /domains/:domain/records": "Add/update DNS records",
+      "GET /domains/health": "Check DNS health for all your domains",
+      "GET /domains/expiring": "Domains expiring in next 90 days",
+    },
+  });
+});
+
 // ─── GET /domains/:domain ───
 
 app.get("/domains/:domain", requireAuth, async (c) => {
@@ -1099,6 +1237,9 @@ app.get("/public-stats", (c) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// ─── /stats alias (no auth) — for economy dashboard ───
+app.get("/stats", (c) => c.redirect("/public-stats", 301));
 
 // ─── robots.txt ───
 app.get("/robots.txt", (c) => {
