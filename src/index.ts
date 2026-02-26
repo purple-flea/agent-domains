@@ -1346,6 +1346,108 @@ app.get("/domains/:domain/seo", requireAuth, async (c) => {
   });
 });
 
+// ─── GET /domains/:domain/propagation — DNS propagation checker ───
+// Checks if recent NS/A changes have propagated to major global DNS resolvers
+
+app.get("/domains/:domain/propagation", requireAuth, async (c) => {
+  const agentId = c.get("agentId");
+  const domainName = c.req.param("domain").toLowerCase();
+  const recordType = (c.req.query("type") ?? "A").toUpperCase();
+
+  const dbDomain = getDomainForAgent(domainName, agentId);
+  if (!dbDomain) {
+    return c.json({ error: "not_found", message: "Domain not found or doesn't belong to you" }, 404);
+  }
+
+  if (!["A", "AAAA", "NS", "MX", "CNAME", "TXT"].includes(recordType)) {
+    return c.json({ error: "invalid_type", message: "type must be one of: A, AAAA, NS, MX, CNAME, TXT" }, 400);
+  }
+
+  // Check multiple global DNS resolvers using DNS-over-HTTPS
+  const resolvers = [
+    { name: "Cloudflare (Global)", url: "https://cloudflare-dns.com/dns-query", region: "Global" },
+    { name: "Google (Global)", url: "https://dns.google/resolve", region: "Global" },
+    { name: "Quad9 (Security)", url: "https://dns.quad9.net:5053/dns-query", region: "Security" },
+  ];
+
+  const results = await Promise.allSettled(
+    resolvers.map(async (resolver) => {
+      try {
+        const url = `${resolver.url}?name=${domainName}&type=${recordType}`;
+        const res = await fetch(url, {
+          headers: { Accept: "application/dns-json" },
+          signal: AbortSignal.timeout(5000),
+        });
+        const data = await res.json() as any;
+        const answers = Array.isArray(data.Answer) ? data.Answer : [];
+        const typeNum = getRecordTypeNumber(recordType);
+        const values = answers
+          .filter((a: any) => a.type === typeNum)
+          .map((a: any) => (a.data ?? "").trim());
+
+        return {
+          resolver: resolver.name,
+          region: resolver.region,
+          status: data.Status === 0 ? "resolved" : data.Status === 3 ? "nxdomain" : "error",
+          records: values,
+          ttl: answers[0]?.TTL ?? null,
+          propagated: values.length > 0,
+        };
+      } catch {
+        return {
+          resolver: resolver.name,
+          region: resolver.region,
+          status: "timeout",
+          records: [],
+          ttl: null,
+          propagated: false,
+        };
+      }
+    })
+  );
+
+  const checks = results.map(r => r.status === "fulfilled" ? r.value : null).filter(Boolean) as any[];
+
+  // Determine consensus value (most common record set)
+  const allRecordSets = checks.filter((c: any) => c.propagated).map((c: any) => c.records.join(","));
+  const consensusSet = allRecordSets.length > 0
+    ? allRecordSets.sort((a: string, b: string) =>
+        allRecordSets.filter((x: string) => x === b).length - allRecordSets.filter((x: string) => x === a).length
+      )[0]
+    : null;
+
+  const propagatedCount = checks.filter((c: any) => c.propagated).length;
+  const totalResolvers = checks.length;
+  const propagationPct = totalResolvers > 0 ? Math.round((propagatedCount / totalResolvers) * 100) : 0;
+
+  const overallStatus = propagationPct === 100 ? "fully_propagated"
+    : propagationPct >= 50 ? "propagating"
+    : "not_propagated";
+
+  return c.json({
+    domain: domainName,
+    record_type: recordType,
+    propagation_status: overallStatus,
+    propagation_pct: propagationPct,
+    propagated_count: propagatedCount,
+    total_resolvers: totalResolvers,
+    consensus_value: consensusSet ? consensusSet.split(",") : [],
+    resolvers: checks,
+    tip: overallStatus === "fully_propagated"
+      ? "DNS has fully propagated. All checked resolvers return records."
+      : overallStatus === "propagating"
+      ? "DNS is propagating. Some resolvers already have the new records. Full propagation takes 24-48h."
+      : `No records found. Ensure you've added the record: POST /domains/${domainName}/records`,
+    propagation_note: "DNS propagation typically completes in 15min–48h depending on TTL and resolver caching.",
+    checked_at: new Date().toISOString(),
+  });
+});
+
+function getRecordTypeNumber(type: string): number {
+  const types: Record<string, number> = { A: 1, NS: 2, CNAME: 5, MX: 15, TXT: 16, AAAA: 28 };
+  return types[type] ?? 0;
+}
+
 // ─── GET /domains/:domain ───
 
 app.get("/domains/:domain", requireAuth, async (c) => {
