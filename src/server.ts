@@ -4,7 +4,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { runMigrations, db } from "./db/index.js";
-import { agents } from "./db/schema.js";
+import { agents, domains } from "./db/schema.js";
 import { sql } from "drizzle-orm";
 import authRoutes from "./routes/auth.js";
 import domainsRoutes from "./routes/domains.js";
@@ -92,6 +92,18 @@ v1.route("/auth", authRoutes);
 v1.route("/domains", domainsRoutes);
 v1.route("/dns", dnsRoutes);
 v1.route("/referral", referralRoutes);
+
+// ─── Public stats (no auth) ───
+v1.get("/public-stats", (c) => {
+  const agentResult = db.select({ count: sql<number>`count(*)` }).from(agents).get();
+  const domainResult = db.select({ count: sql<number>`count(*)` }).from(domains).get();
+  return c.json({
+    service: "agent-domains",
+    registered_agents: agentResult?.count ?? 0,
+    total_domains: domainResult?.count ?? 0,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // ─── Gossip (no auth) ───
 v1.get("/gossip", (c) => {

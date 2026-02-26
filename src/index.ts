@@ -154,7 +154,11 @@ app.use("*", async (c, next) => {
 // ─── Static files ───
 
 app.use("/llms.txt", serveStatic({ path: "public/llms.txt" }));
+app.use("/.well-known/llms.txt", serveStatic({ path: "public/llms.txt" }));
 app.use("/openapi.json", serveStatic({ path: "public/openapi.json" }));
+
+// ─── favicon.ico — 204 to suppress 404 log noise ───
+app.get("/favicon.ico", (c) => new Response(null, { status: 204 }));
 
 // ─── Health ───
 
