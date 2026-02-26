@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { mkdirSync } from "fs";
+import { randomBytes } from "crypto";
 import * as schema from "./schema.js";
 
 mkdirSync("data", { recursive: true });
@@ -92,4 +93,55 @@ CREATE INDEX IF NOT EXISTS idx_transactions_agent ON transactions(agent_id);
 
 export function runMigrations() {
   sqlite.exec(migrations);
+  // Fix old agents table: make api_key nullable and add new columns (SQLite table rebuild)
+  try {
+    const info = sqlite.prepare("PRAGMA table_info(agents)").all() as { name: string; notnull: number }[];
+    const apiKeyCol = info.find(c => c.name === "api_key");
+    if (apiKeyCol && apiKeyCol.notnull === 1) {
+      // Recreate agents table without NOT NULL on api_key (disable FKs for drop)
+      sqlite.pragma("foreign_keys = OFF");
+      sqlite.prepare("DROP TABLE IF EXISTS agents_new").run();
+      sqlite.prepare("CREATE TABLE agents_new (id TEXT PRIMARY KEY, api_key TEXT UNIQUE, api_key_hash TEXT UNIQUE, referral_code TEXT UNIQUE, referred_by TEXT, tier TEXT NOT NULL DEFAULT 'free', balance_usdc REAL NOT NULL DEFAULT 0, balance_usd REAL NOT NULL DEFAULT 0, total_spent REAL NOT NULL DEFAULT 0, total_domains INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()), last_active INTEGER)").run();
+      sqlite.prepare("INSERT OR IGNORE INTO agents_new (id, api_key, balance_usdc, created_at) SELECT id, api_key, balance_usdc, created_at FROM agents").run();
+      sqlite.prepare("DROP TABLE agents").run();
+      sqlite.prepare("ALTER TABLE agents_new RENAME TO agents").run();
+      sqlite.pragma("foreign_keys = ON");
+    }
+  } catch { /* already migrated or agents_new already exists */ }
+
+  // Add missing columns to old agents table (idempotent)
+  const addColumns = [
+    "ALTER TABLE agents ADD COLUMN api_key_hash TEXT",
+    "ALTER TABLE agents ADD COLUMN referral_code TEXT",
+    "ALTER TABLE agents ADD COLUMN referred_by TEXT",
+    "ALTER TABLE agents ADD COLUMN tier TEXT NOT NULL DEFAULT 'free'",
+    "ALTER TABLE agents ADD COLUMN balance_usd REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN total_spent REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN total_domains INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN last_active INTEGER",
+    // Add missing columns to domains table
+    "ALTER TABLE domains ADD COLUMN njalla_domain TEXT",
+    "ALTER TABLE domains ADD COLUMN expires_at INTEGER",
+    "ALTER TABLE domains ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE domains ADD COLUMN price_usd REAL NOT NULL DEFAULT 0",
+  ];
+  for (const stmt of addColumns) {
+    try { sqlite.exec(stmt); } catch { /* already exists */ }
+  }
+  // Migrate api_key → api_key_hash if agents table has old api_key column
+  try {
+    const info = sqlite.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
+    const hasApiKey = info.some(c => c.name === "api_key");
+    const hasApiKeyHash = info.some(c => c.name === "api_key_hash");
+    if (hasApiKey && hasApiKeyHash) {
+      // Copy old api_key into api_key_hash for old agents (store plaintext as hash placeholder)
+      sqlite.exec("UPDATE agents SET api_key_hash = api_key WHERE api_key_hash IS NULL AND api_key IS NOT NULL");
+    }
+    // Generate referral codes for old agents missing them
+    const agentsMissingCode = sqlite.prepare("SELECT id FROM agents WHERE referral_code IS NULL").all() as { id: string }[];
+    for (const a of agentsMissingCode) {
+      const code = `ref_${randomBytes(4).toString("hex")}`;
+      sqlite.prepare("UPDATE agents SET referral_code = ? WHERE id = ?").run(code, a.id);
+    }
+  } catch { /* migration already done */ }
 }

@@ -3,9 +3,10 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { runMigrations, db } from "./db/index.js";
+import { runMigrations, db, sqlite } from "./db/index.js";
 import { agents, domains } from "./db/schema.js";
-import { sql } from "drizzle-orm";
+import { sql, desc } from "drizzle-orm";
+import { TLD_PRICES } from "./njalla.js";
 import authRoutes from "./routes/auth.js";
 import domainsRoutes from "./routes/domains.js";
 import dnsRoutes from "./routes/dns.js";
@@ -17,6 +18,22 @@ const app = new Hono();
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(",") || ["*"];
 app.use("*", cors({ origin: ALLOWED_ORIGINS }));
 app.use("*", logger());
+
+app.onError((err, c) => {
+  const msg = err.message || "Internal server error";
+  console.error(`[error] ${c.req.method} ${c.req.path}: ${msg}`);
+  if (msg.toLowerCase().includes("json") || msg.toLowerCase().includes("parse")) {
+    return c.json({ error: "invalid_json", message: "Request body must be valid JSON" }, 400);
+  }
+  return c.json({ error: "internal_error", message: "An unexpected error occurred" }, 500);
+});
+
+app.notFound((c) => c.json({
+  error: "not_found",
+  message: `${c.req.method} ${c.req.path} not found`,
+  docs: "https://domains.purpleflea.com/llms.txt",
+  openapi: "/openapi.json",
+}, 404));
 
 // ─── _info metadata middleware ───
 app.use("*", async (c, next) => {
@@ -41,6 +58,10 @@ app.use("*", async (c, next) => {
     // non-JSON or already consumed — skip
   }
 });
+
+// ─── Utility endpoints ───
+app.get("/ping", (c) => c.text("pong"));
+app.get("/favicon.ico", (c) => c.body(null, 204));
 
 app.use("/llms.txt", serveStatic({ path: "public/llms.txt" }));
 app.use("/llms-full.txt", serveStatic({ path: "public/llms-full.txt" }));
@@ -105,6 +126,139 @@ v1.get("/public-stats", (c) => {
   });
 });
 
+// ─── Leaderboard (public, 60s cache) ───
+v1.get("/leaderboard", (c) => {
+  c.header("Cache-Control", "public, max-age=60");
+
+  // Use raw SQL for compatibility with both old and new DB schemas
+  const byDomainsRaw = sqlite.prepare(
+    `SELECT agent_id, COUNT(*) as domain_count, MIN(registered_at) as first_registered
+     FROM domains GROUP BY agent_id ORDER BY domain_count DESC LIMIT 10`
+  ).all() as { agent_id: string; domain_count: number; first_registered: number }[];
+
+  // Referral earnings — handle both old (amount_usdc) and new (commission_amount) schema
+  let refEarningsRaw: { referrer_id: string; total_commission: number; ref_count: number }[] = [];
+  try {
+    refEarningsRaw = sqlite.prepare(
+      `SELECT referrer_id, COALESCE(SUM(commission_amount), SUM(amount_usdc), 0) as total_commission, COUNT(*) as ref_count
+       FROM referral_earnings GROUP BY referrer_id ORDER BY total_commission DESC LIMIT 10`
+    ).all() as typeof refEarningsRaw;
+  } catch {
+    // column doesn't exist — try old schema
+    refEarningsRaw = sqlite.prepare(
+      `SELECT referrer_id, COALESCE(SUM(amount_usdc), 0) as total_commission, COUNT(*) as ref_count
+       FROM referral_earnings GROUP BY referrer_id ORDER BY total_commission DESC LIMIT 10`
+    ).all() as typeof refEarningsRaw;
+  }
+
+  const totalAgents = (sqlite.prepare("SELECT COUNT(*) as c FROM agents").get() as { c: number }).c;
+  const totalDomains = (sqlite.prepare("SELECT COUNT(*) as c FROM domains").get() as { c: number }).c;
+
+  return c.json({
+    service: "agent-domains",
+    updated: new Date().toISOString(),
+    by_domains_owned: {
+      title: "Top 10 agents by domains owned",
+      entries: byDomainsRaw.map((a, i) => ({
+        rank: i + 1,
+        agent: a.agent_id.slice(0, 6) + "...",
+        total_domains: a.domain_count,
+        member_since: a.first_registered
+          ? new Date(a.first_registered * 1000).toISOString().slice(0, 10)
+          : null,
+      })),
+    },
+    by_referral_earnings: {
+      title: "Top 10 agents by referral commission earned",
+      entries: refEarningsRaw.map((r, i) => ({
+        rank: i + 1,
+        agent: r.referrer_id.slice(0, 6) + "...",
+        total_referral_commission_usd: Math.round(r.total_commission * 100) / 100,
+        referral_purchases: r.ref_count,
+      })),
+    },
+    network: {
+      total_agents: totalAgents,
+      total_domains_registered: totalDomains,
+    },
+    join: "POST /v1/auth/register — earn 15% commission on domain purchases from agents you refer",
+  });
+});
+
+// ─── Activity feed (public, 30s cache) ───
+v1.get("/feed", (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+
+  // Use raw SQL for compatibility with both old and new DB schemas
+  const recentDomains = sqlite.prepare(
+    `SELECT id, agent_id, domain_name, status, registered_at FROM domains ORDER BY registered_at DESC LIMIT 20`
+  ).all() as { id: string; agent_id: string; domain_name: string; status: string; registered_at: number }[];
+
+  const feed = recentDomains.map((d) => {
+    const agent = d.agent_id.slice(0, 6);
+    return {
+      event: `Agent ${agent}... registered ${d.domain_name}`,
+      agent: agent + "...",
+      domain: d.domain_name,
+      status: d.status,
+      at: new Date(d.registered_at * 1000).toISOString(),
+    };
+  });
+
+  const totalDomains = (sqlite.prepare("SELECT COUNT(*) as c FROM domains").get() as { c: number }).c;
+
+  return c.json({
+    service: "agent-domains",
+    feed,
+    total_domains_all_time: totalDomains,
+    note: "Last 20 domain registrations. Agent IDs anonymized to first 6 chars. Updates every 30s.",
+    register: "POST /v1/auth/register to start registering domains",
+    updated: new Date().toISOString(),
+  });
+});
+
+// ─── TLD pricing table (public) ───
+v1.get("/tlds", (c) => {
+  c.header("Cache-Control", "public, max-age=3600");
+  const tlds = Object.entries(TLD_PRICES).map(([tld, basePrice]) => ({
+    tld,
+    base_price_eur: basePrice,
+    our_price_eur: Math.round(basePrice * 1.2 * 100) / 100,
+    markup_pct: "20%",
+    register: `POST /v1/domains/register { "domain": "yourdomain.${tld}" }`,
+  }));
+  return c.json({
+    total_tlds: tlds.length,
+    tlds,
+    note: "Prices in EUR. Our price = base + 20% markup. All domains registered via Njalla for maximum privacy.",
+    search: "GET /v1/domains/search?q=yourdomain",
+    updated: new Date().toISOString(),
+  });
+});
+
+// ─── Domain search (public) ───
+v1.get("/search", async (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+  const name = c.req.query("name") || c.req.query("q") || "";
+  if (!name) {
+    return c.json({ error: "missing_name", message: "Provide ?name=example or ?q=example.com" }, 400);
+  }
+  // Return TLD availability hints (actual Njalla check requires auth to prevent abuse)
+  const tlds = ["com", "net", "org", "io", "ai", "co", "app", "dev"];
+  return c.json({
+    searched: name,
+    availability_hint: "Register to check live availability via Njalla",
+    popular_tlds: tlds.map(tld => ({
+      domain: name.includes(".") ? name : `${name}.${tld}`,
+      tld,
+      base_price_eur: TLD_PRICES[tld] ?? null,
+      check: "POST /v1/auth/register to get API key, then GET /v1/domains/search?q=...",
+    })),
+    register_to_check: "POST /v1/auth/register",
+    note: "Authenticated search gives live Njalla availability check",
+  });
+});
+
 // ─── Gossip (no auth) ───
 v1.get("/gossip", (c) => {
   const result = db.select({ count: sql<number>`count(*)` }).from(agents).get();
@@ -163,6 +317,9 @@ v1.get("/docs", (c) => c.json({
     add_cname: { domain_id: "dom_...", type: "CNAME", name: "www", content: "myagent.com" },
   },
 }));
+
+// ─── /stats alias (no auth) — for economy dashboard ───
+app.get("/stats", (c) => c.redirect("/v1/public-stats", 301));
 
 app.route("/v1", v1);
 
