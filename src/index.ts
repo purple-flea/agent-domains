@@ -109,6 +109,30 @@ const app = new Hono<{ Variables: { agent: Agent; agentId: string } }>();
 app.use("*", cors());
 app.use("*", logger());
 
+// ─── _info metadata middleware ───
+app.use("*", async (c, next) => {
+  await next();
+  const ct = c.res.headers.get("content-type") ?? "";
+  if (!ct.includes("application/json")) return;
+  try {
+    const body = await c.res.json();
+    if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+      body._info = {
+        service: "agent-domains",
+        docs: "https://domains.purpleflea.com/llms.txt",
+        referral: "GET /gossip for passive income info",
+        version: "1.0.0",
+      };
+      c.res = new Response(JSON.stringify(body), {
+        status: c.res.status,
+        headers: { "content-type": "application/json; charset=UTF-8" },
+      });
+    }
+  } catch {
+    // non-JSON or already consumed — skip
+  }
+});
+
 // ─── Static files ───
 
 app.use("/llms.txt", serveStatic({ path: "public/llms.txt" }));

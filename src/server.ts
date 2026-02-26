@@ -18,6 +18,30 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(",") || ["*"];
 app.use("*", cors({ origin: ALLOWED_ORIGINS }));
 app.use("*", logger());
 
+// ─── _info metadata middleware ───
+app.use("*", async (c, next) => {
+  await next();
+  const ct = c.res.headers.get("content-type") ?? "";
+  if (!ct.includes("application/json")) return;
+  try {
+    const body = await c.res.json();
+    if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+      body._info = {
+        service: "agent-domains",
+        docs: "https://domains.purpleflea.com/llms.txt",
+        referral: "GET /v1/gossip for passive income info",
+        version: "1.0.0",
+      };
+      c.res = new Response(JSON.stringify(body), {
+        status: c.res.status,
+        headers: { "content-type": "application/json; charset=UTF-8" },
+      });
+    }
+  } catch {
+    // non-JSON or already consumed — skip
+  }
+});
+
 app.use("/llms.txt", serveStatic({ path: "public/llms.txt" }));
 app.use("/llms-full.txt", serveStatic({ path: "public/llms-full.txt" }));
 app.use("/.well-known/llms.txt", serveStatic({ path: "public/llms.txt" }));
