@@ -784,6 +784,76 @@ app.get("/changelog", (c) => c.json({
   ],
 }));
 
+// ─── GET /public-stats (no auth) ───
+app.get("/public-stats", (c) => {
+  const agentCount = (sqlite.prepare("SELECT COUNT(*) as count FROM agents").get() as { count: number }).count;
+  const domainCount = (sqlite.prepare("SELECT COUNT(*) as count FROM domains").get() as { count: number }).count;
+  return c.json({
+    service: "agent-domains",
+    registered_agents: agentCount,
+    total_domains: domainCount,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ─── robots.txt ───
+app.get("/robots.txt", (c) => {
+  c.header("Content-Type", "text/plain");
+  return c.text(`User-agent: *
+Allow: /
+Allow: /gossip
+Allow: /public-stats
+Allow: /tlds
+Allow: /search
+Allow: /llms.txt
+Allow: /openapi.json
+Allow: /health
+
+Sitemap: https://domains.purpleflea.com/sitemap.xml
+`);
+});
+
+// ─── sitemap.xml ───
+app.get("/sitemap.xml", (c) => {
+  c.header("Content-Type", "application/xml");
+  const urls = [
+    "/",
+    "/health",
+    "/gossip",
+    "/public-stats",
+    "/tlds",
+    "/openapi.json",
+    "/llms.txt",
+    "/changelog",
+  ];
+  const loc = (path: string) => `<url><loc>https://domains.purpleflea.com${path}</loc></url>`;
+  return c.text(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls.map(loc).join("\n")}
+</urlset>`);
+});
+
+// ─── /.well-known/agent.json ───
+app.get("/.well-known/agent.json", (c) => c.json({
+  name: "Purple Flea Agent Domains",
+  description: "Privacy-first domain registration for AI agents. Register domains, manage DNS, no personal data required. Powered by Njalla.",
+  url: "https://domains.purpleflea.com",
+  version: "1.3.0",
+  type: "service",
+  category: "domains",
+  for_agents: true,
+  registration: "POST /register",
+  documentation: "https://domains.purpleflea.com/llms.txt",
+  openapi: "https://domains.purpleflea.com/openapi.json",
+  gossip: "https://domains.purpleflea.com/gossip",
+  capabilities: ["domain-search", "domain-registration", "dns-management", "privacy-first"],
+  referral: {
+    program: "3-level",
+    commission: "15% domain purchases",
+    endpoint: "GET /referrals",
+  },
+}));
+
 // ─── Start server ───
 
 const port = parseInt(process.env.PORT ?? "3004", 10);
