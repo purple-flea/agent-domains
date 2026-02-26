@@ -858,6 +858,57 @@ app.get("/.well-known/agent.json", (c) => c.json({
   },
 }));
 
+// ─── Purple Flea network manifest ───
+const PURPLEFLEA_NETWORK = {
+  name: "Purple Flea",
+  tagline: "The AI-native financial services platform",
+  website: "https://purpleflea.com",
+  for_agents: true,
+  services: [
+    {
+      name: "Casino",
+      url: "https://casino.purpleflea.com",
+      description: "8 provably fair games. Earn 10% commission on referrals.",
+      register: "POST /api/v1/auth/register",
+      gossip: "/api/v1/gossip",
+      llms: "/llms.txt",
+      capabilities: ["coin-flip", "dice", "roulette", "blackjack", "crash", "plinko"],
+    },
+    {
+      name: "Trading",
+      url: "https://trading.purpleflea.com",
+      description: "Real perpetual futures on Hyperliquid. 275+ markets. Earn 20% commission.",
+      register: "POST /v1/auth/register",
+      gossip: "/v1/gossip",
+      llms: "/llms.txt",
+      capabilities: ["perpetuals", "leverage", "copy-trading", "275-markets"],
+    },
+    {
+      name: "Wallet",
+      url: "https://wallet.purpleflea.com",
+      description: "Multi-chain HD wallets, balance checks, send, cross-chain swaps. Earn 10% on swaps.",
+      register: "POST /v1/auth/register",
+      gossip: "/v1/gossip",
+      llms: "/llms.txt",
+      capabilities: ["hd-wallet", "multi-chain", "swaps", "bitcoin", "solana", "ethereum"],
+    },
+    {
+      name: "Domains",
+      url: "https://domains.purpleflea.com",
+      description: "Privacy-first domain registration via Njalla. Full DNS control. Earn 15% commission.",
+      register: "POST /register",
+      gossip: "/gossip",
+      llms: "/llms.txt",
+      capabilities: ["domain-search", "registration", "dns-management", "privacy"],
+    },
+  ],
+  referral: "All services have 3-level referral programs. Embed your referral code to earn passive income.",
+  discovery: "GET /.well-known/purpleflea.json from any service to discover all services",
+};
+
+app.get("/.well-known/purpleflea.json", (c) => c.json(PURPLEFLEA_NETWORK));
+app.get("/network", (c) => c.json(PURPLEFLEA_NETWORK));
+
 // ─── Start server ───
 
 const port = parseInt(process.env.PORT ?? "3004", 10);
