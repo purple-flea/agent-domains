@@ -1,6 +1,6 @@
 {
   "name": "@purpleflea/agent-domains",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Privacy-first domain registration API for AI agents. Search, register, and manage domains with DNS. Powered by Njalla.",
   "type": "module",
   "main": "dist/server.js",
@@ -36,5 +36,18 @@
   "bugs": {
     "url": "https://github.com/Purple-flea/agent-domains/issues"
   },
-  "keywords": []
+  "keywords": [
+    "autonomous-agent",
+    "openai",
+    "llm",
+    "mcp",
+    "crewai",
+    "agent-economy",
+    "ai-agent",
+    "claude",
+    "langchain",
+    "purpleflea",
+    "web3",
+    "model-context-protocol"
+  ]
 }
