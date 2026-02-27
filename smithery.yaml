@@ -1,0 +1,25 @@
+name: Purple Flea Domains
+description: Buy and manage domain names with USDC via API. Search availability, register .com/.ai/.io domains, manage DNS records. 15% referral commissions.
+version: 1.0.0
+homepage: https://domains.purpleflea.com
+license: MIT
+tags:
+  - domains
+  - dns
+  - web3
+  - ai-agent
+  - mcp
+  - crypto
+startCommand:
+  type: stdio
+  configSchema:
+    properties:
+      referralCode:
+        type: string
+        description: Your referral code to earn 15% of domain purchase fees
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', '@purpleflea/domains-mcp'],
+      env: { REFERRAL_CODE: config.referralCode || '' }
+    })
