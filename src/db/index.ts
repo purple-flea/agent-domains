@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS agents (
   balance_usd REAL NOT NULL DEFAULT 0,
   total_spent REAL NOT NULL DEFAULT 0,
   total_domains INTEGER NOT NULL DEFAULT 0,
+  deposit_index INTEGER NOT NULL DEFAULT 0,
+  total_deposited REAL NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   last_active INTEGER
 );
@@ -83,12 +85,37 @@ CREATE TABLE IF NOT EXISTS referral_withdrawals (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+CREATE TABLE IF NOT EXISTS deposit_addresses (
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  chain TEXT NOT NULL,
+  address TEXT NOT NULL,
+  PRIMARY KEY (agent_id, chain)
+);
+
+CREATE TABLE IF NOT EXISTS deposits (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  chain TEXT NOT NULL,
+  token TEXT NOT NULL,
+  amount_raw REAL NOT NULL,
+  amount_usd REAL NOT NULL,
+  swap_fee REAL NOT NULL DEFAULT 0,
+  tx_hash TEXT,
+  wagyu_tx TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  confirmations INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  credited_at INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_domains_agent ON domains(agent_id);
 CREATE INDEX IF NOT EXISTS idx_domains_status ON domains(status);
 CREATE INDEX IF NOT EXISTS idx_domains_name ON domains(domain_name);
 CREATE INDEX IF NOT EXISTS idx_dns_domain ON dns_records(domain_id);
 CREATE INDEX IF NOT EXISTS idx_dns_agent ON dns_records(agent_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_agent ON transactions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_deposits_agent ON deposits(agent_id);
+CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
 `;
 
 export function runMigrations() {
@@ -118,6 +145,8 @@ export function runMigrations() {
     "ALTER TABLE agents ADD COLUMN balance_usd REAL NOT NULL DEFAULT 0",
     "ALTER TABLE agents ADD COLUMN total_spent REAL NOT NULL DEFAULT 0",
     "ALTER TABLE agents ADD COLUMN total_domains INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN deposit_index INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN total_deposited REAL NOT NULL DEFAULT 0",
     "ALTER TABLE agents ADD COLUMN last_active INTEGER",
     // Add missing columns to domains table
     "ALTER TABLE domains ADD COLUMN njalla_domain TEXT",
@@ -142,6 +171,14 @@ export function runMigrations() {
     for (const a of agentsMissingCode) {
       const code = `ref_${randomBytes(4).toString("hex")}`;
       sqlite.prepare("UPDATE agents SET referral_code = ? WHERE id = ?").run(code, a.id);
+    }
+    // Assign sequential deposit_index to agents that still have index 0 (deduplication)
+    const agentsIdx0 = sqlite.prepare("SELECT id FROM agents WHERE deposit_index = 0 ORDER BY created_at ASC").all() as { id: string }[];
+    if (agentsIdx0.length > 1) {
+      // More than one agent at index 0 — reassign sequentially starting from 0
+      agentsIdx0.forEach((a, i) => {
+        sqlite.prepare("UPDATE agents SET deposit_index = ? WHERE id = ?").run(i, a.id);
+      });
     }
   } catch { /* migration already done */ }
 }

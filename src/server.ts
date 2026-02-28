@@ -11,6 +11,7 @@ import authRoutes from "./routes/auth.js";
 import domainsRoutes from "./routes/domains.js";
 import dnsRoutes from "./routes/dns.js";
 import referralRoutes from "./routes/referral.js";
+import { startDepositMonitor } from "./crypto/deposits.js";
 
 runMigrations();
 
@@ -318,14 +319,16 @@ v1.get("/docs", (c) => c.json({
   },
 }));
 
-// ─── /stats alias (no auth) — for economy dashboard ───
+// ─── /stats and /public-stats aliases (no auth) — for economy dashboard ───
 app.get("/stats", (c) => c.redirect("/v1/public-stats", 301));
+app.get("/public-stats", (c) => c.redirect("/v1/public-stats", 301));
 
 app.route("/v1", v1);
 
 const port = parseInt(process.env.PORT || "3007", 10);
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`Agent Domains v1 running on http://localhost:${info.port}`);
+  startDepositMonitor();
 });
 
 export default app;

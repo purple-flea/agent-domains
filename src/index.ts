@@ -190,6 +190,24 @@ app.get("/health", (c) => {
   });
 });
 
+// ─── Public stats (no auth) ───
+
+app.get("/public-stats", (c) => {
+  const agentCount = (sqlite.prepare("SELECT COUNT(*) as count FROM agents").get() as { count: number }).count;
+  const domainCount = (sqlite.prepare("SELECT COUNT(*) as count FROM domains").get() as { count: number }).count;
+  c.header("Cache-Control", "public, max-age=60");
+  return c.json({
+    service: "agent-domains",
+    registered_agents: agentCount,
+    total_domains: domainCount,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/stats", (c) => {
+  return c.redirect("/public-stats", 301);
+});
+
 // ─── Root ───
 
 app.get("/", (c) => {

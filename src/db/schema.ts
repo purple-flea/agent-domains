@@ -1,4 +1,4 @@
-import { sqliteTable, text, real, integer, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, real, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const agents = sqliteTable("agents", {
   id: text("id").primaryKey(),
@@ -9,6 +9,8 @@ export const agents = sqliteTable("agents", {
   balanceUsd: real("balance_usd").default(0).notNull(),
   totalSpent: real("total_spent").default(0).notNull(),
   totalDomains: integer("total_domains").default(0).notNull(),
+  depositIndex: integer("deposit_index").default(0).notNull(), // HD wallet derivation index
+  totalDeposited: real("total_deposited").default(0).notNull(),
   createdAt: integer("created_at").$defaultFn(() => Math.floor(Date.now() / 1000)).notNull(),
   lastActive: integer("last_active"),
 });
@@ -79,3 +81,32 @@ export const referralWithdrawals = sqliteTable("referral_withdrawals", {
   status: text("status").default("pending").notNull(),
   createdAt: integer("created_at").$defaultFn(() => Math.floor(Date.now() / 1000)).notNull(),
 });
+
+// ─── Crypto deposit tables ───
+
+export const depositAddresses = sqliteTable("deposit_addresses", {
+  agentId: text("agent_id").notNull().references(() => agents.id),
+  chain: text("chain").notNull(),
+  address: text("address").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.agentId, t.chain] }),
+]);
+
+export const deposits = sqliteTable("deposits", {
+  id: text("id").primaryKey(),
+  agentId: text("agent_id").notNull().references(() => agents.id),
+  chain: text("chain").notNull(),
+  token: text("token").notNull(),
+  amountRaw: real("amount_raw").notNull(),
+  amountUsd: real("amount_usd").notNull(),
+  swapFee: real("swap_fee").default(0).notNull(),
+  txHash: text("tx_hash"),
+  wagyuTx: text("wagyu_tx"),
+  status: text("status").default("pending").notNull(), // pending | credited | failed
+  confirmations: integer("confirmations").default(0).notNull(),
+  createdAt: integer("created_at").$defaultFn(() => Math.floor(Date.now() / 1000)).notNull(),
+  creditedAt: integer("credited_at"),
+}, (t) => [
+  index("idx_deposits_agent").on(t.agentId),
+  index("idx_deposits_status").on(t.status),
+]);

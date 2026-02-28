@@ -14,6 +14,9 @@ import {
 } from "../engine/njalla.js";
 import type { AppEnv } from "../types.js";
 
+// EUR → USD conversion rate (fixed; ECB approximate)
+const USD_PER_EUR = 1.08;
+
 const app = new Hono<AppEnv>();
 
 app.use("/*", agentAuth);
@@ -166,20 +169,27 @@ app.post("/register", async (c) => {
   }
 
   const baseCost = availability.price;
-  const agentPrice = applyMarkup(baseCost);
-  const markupAmount = getMarkupAmount(baseCost);
+  const agentPriceEur = applyMarkup(baseCost);
+  const markupAmountEur = getMarkupAmount(baseCost);
 
-  // Check agent balance
+  // Convert EUR prices to USD for balance deduction
+  const baseCostUsd = Math.round(baseCost * USD_PER_EUR * 100) / 100;
+  const agentPriceUsd = Math.round(agentPriceEur * USD_PER_EUR * 100) / 100;
+  const markupAmountUsd = Math.round(markupAmountEur * USD_PER_EUR * 100) / 100;
+
+  // Check agent USD balance
   const agent = db.select().from(schema.agents).where(eq(schema.agents.id, agentId)).get();
   if (!agent) return c.json({ error: "not_found" }, 404);
 
-  if (agent.balanceUsd < agentPrice) {
+  if (agent.balanceUsd < agentPriceUsd) {
     return c.json({
       error: "insufficient_balance",
-      balance_eur: Math.round(agent.balanceUsd * 100) / 100,
-      required_eur: agentPrice,
-      shortfall_eur: Math.round((agentPrice - agent.balanceUsd) * 100) / 100,
-      suggestion: "POST /v1/auth/deposit to add funds",
+      balance_usd: Math.round(agent.balanceUsd * 100) / 100,
+      required_usd: agentPriceUsd,
+      required_eur: agentPriceEur,
+      shortfall_usd: Math.round((agentPriceUsd - agent.balanceUsd) * 100) / 100,
+      exchange_rate: `1 EUR = ${USD_PER_EUR} USD`,
+      suggestion: "POST /v1/auth/deposit-address { chain: 'base' } to add funds",
     }, 400);
   }
 
@@ -194,7 +204,7 @@ app.post("/register", async (c) => {
   // Debit agent balance and record everything in a transaction
   const domainId = `dom_${randomBytes(8).toString("hex")}`;
   const txId = `tx_${randomBytes(8).toString("hex")}`;
-  const newBalance = Math.round((agent.balanceUsd - agentPrice) * 100) / 100;
+  const newBalance = Math.round((agent.balanceUsd - agentPriceUsd) * 100) / 100;
   const expiresAt = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60; // 1 year default
 
   db.transaction((tx) => {
@@ -205,13 +215,13 @@ app.post("/register", async (c) => {
       njallaDomain: njallaResult.domain,
       status: "active",
       expiresAt,
-      costUsd: baseCost,
-      priceUsd: agentPrice,
+      costUsd: baseCostUsd,
+      priceUsd: agentPriceUsd,
     }).run();
 
     tx.update(schema.agents).set({
       balanceUsd: newBalance,
-      totalSpent: sql`${schema.agents.totalSpent} + ${agentPrice}`,
+      totalSpent: sql`${schema.agents.totalSpent} + ${agentPriceUsd}`,
       totalDomains: sql`${schema.agents.totalDomains} + 1`,
       lastActive: Math.floor(Date.now() / 1000),
     }).where(eq(schema.agents.id, agentId)).run();
@@ -220,20 +230,20 @@ app.post("/register", async (c) => {
       id: txId,
       agentId,
       type: "domain_purchase",
-      amount: -agentPrice,
+      amount: -agentPriceUsd,
       balanceAfter: newBalance,
-      description: `Registered ${domainName} (€${agentPrice.toFixed(2)})`,
+      description: `Registered ${domainName} (€${agentPriceEur.toFixed(2)} = $${agentPriceUsd.toFixed(2)})`,
       domainId,
     }).run();
 
     if (agent.referredBy) {
       const refEarningId = `re_${randomBytes(8).toString("hex")}`;
-      const commission = Math.round(markupAmount * 0.20 * 100) / 100;
+      const commission = Math.round(markupAmountUsd * 0.20 * 100) / 100;
       tx.insert(schema.referralEarnings).values({
         id: refEarningId,
         referrerId: agent.referredBy,
         referredId: agentId,
-        feeAmount: markupAmount,
+        feeAmount: markupAmountUsd,
         commissionAmount: commission,
         domainId,
       }).run();
@@ -247,10 +257,13 @@ app.post("/register", async (c) => {
     expires_at: new Date(expiresAt * 1000).toISOString(),
     cost: {
       base_price_eur: baseCost,
+      base_price_usd: baseCostUsd,
       markup: `${MARKUP_PERCENTAGE}%`,
-      total_charged_eur: agentPrice,
+      total_charged_eur: agentPriceEur,
+      total_charged_usd: agentPriceUsd,
+      exchange_rate: `1 EUR = ${USD_PER_EUR} USD`,
     },
-    balance_eur: newBalance,
+    balance_usd: newBalance,
     transaction_id: txId,
     next_steps: [
       `POST /v1/dns/records — add DNS records (A, CNAME)`,
