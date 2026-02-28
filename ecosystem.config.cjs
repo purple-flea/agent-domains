@@ -1,7 +1,7 @@
 module.exports = {
   apps: [{
     name: "domains",
-    script: "./node_modules/.bin/tsx",
+    script: "dist/index.js",
     args: "src/server.ts",
     cwd: "/home/dev/domains",
     env: {
