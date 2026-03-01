@@ -322,6 +322,266 @@ v1.get("/docs", (c) => c.json({
   },
 }));
 
+// ─── GET /openapi.json ───
+app.get("/openapi.json", (c) =>
+  c.json({
+    openapi: "3.0.0",
+    info: {
+      title: "Purple Flea Agent Domains",
+      version: "1.0.0",
+      description: "Privacy-first domain registration and DNS management for AI agents. Powered by Njalla.",
+      contact: { url: "https://purpleflea.com" },
+    },
+    servers: [{ url: "https://domains.purpleflea.com", description: "Production" }],
+    security: [{ bearerAuth: [] }],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          description: "API key from POST /v1/auth/register",
+        },
+      },
+    },
+    paths: {
+      "/health": {
+        get: {
+          summary: "Health check",
+          security: [],
+          responses: { "200": { description: "Service status, uptime, registered agents" } },
+        },
+      },
+      "/v1/auth/register": {
+        post: {
+          summary: "Register agent account",
+          security: [],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { referral_code: { type: "string" } },
+                },
+              },
+            },
+          },
+          responses: { "201": { description: "API key and account info" } },
+        },
+      },
+      "/v1/auth/account": {
+        get: {
+          summary: "Account info, balance, tier",
+          responses: { "200": { description: "Account details" } },
+        },
+      },
+      "/v1/auth/deposit-address": {
+        post: {
+          summary: "Get crypto deposit address",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["chain"],
+                  properties: { chain: { type: "string", example: "ethereum" } },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Deposit address for specified chain" } },
+        },
+      },
+      "/v1/auth/supported-chains": {
+        get: {
+          summary: "Supported deposit chains",
+          security: [],
+          responses: { "200": { description: "List of chains accepting deposits" } },
+        },
+      },
+      "/v1/auth/deposits": {
+        get: {
+          summary: "Deposit history",
+          responses: { "200": { description: "List of deposits for this agent" } },
+        },
+      },
+      "/v1/domains/search": {
+        get: {
+          summary: "Search domain availability across TLDs",
+          security: [],
+          parameters: [
+            { name: "q", in: "query", schema: { type: "string" }, description: "Domain name to search" },
+          ],
+          responses: { "200": { description: "Availability hints and pricing" } },
+        },
+      },
+      "/v1/domains/check": {
+        get: {
+          summary: "Quick single-domain availability check",
+          parameters: [
+            { name: "domain", in: "query", required: true, schema: { type: "string" } },
+          ],
+          responses: { "200": { description: "Domain availability status and price" } },
+        },
+      },
+      "/v1/domains/bulk-check": {
+        post: {
+          summary: "Check multiple domains at once",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["domains"],
+                  properties: { domains: { type: "array", items: { type: "string" } } },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Availability and pricing for each domain" } },
+        },
+      },
+      "/v1/domains/register": {
+        post: {
+          summary: "Register a domain — deducts from balance",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["domain"],
+                  properties: {
+                    domain: { type: "string", example: "myagent.ai" },
+                    referral_code: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "201": { description: "Domain registered, DNS control granted" },
+            "402": { description: "Insufficient balance" },
+          },
+        },
+      },
+      "/v1/domains": {
+        get: {
+          summary: "List all domains for this agent",
+          responses: { "200": { description: "Domain list with status" } },
+        },
+      },
+      "/v1/domains/{id}": {
+        get: {
+          summary: "Domain details and DNS records",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Domain details" } },
+        },
+      },
+      "/v1/dns/records": {
+        post: {
+          summary: "Add DNS record",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["domain_id", "type", "name", "content"],
+                  properties: {
+                    domain_id: { type: "string" },
+                    type: { type: "string", enum: ["A", "AAAA", "CNAME", "MX", "TXT"] },
+                    name: { type: "string", example: "@" },
+                    content: { type: "string", example: "1.2.3.4" },
+                    ttl: { type: "integer", default: 300 },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "201": { description: "DNS record created" } },
+        },
+        get: {
+          summary: "List DNS records for a domain",
+          parameters: [{ name: "domain_id", in: "query", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "DNS records" } },
+        },
+      },
+      "/v1/dns/records/{recordId}": {
+        put: {
+          summary: "Edit DNS record content or TTL",
+          parameters: [{ name: "recordId", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Updated record" } },
+        },
+        delete: {
+          summary: "Delete DNS record",
+          parameters: [{ name: "recordId", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "Record deleted" } },
+        },
+      },
+      "/v1/referral/code": {
+        get: {
+          summary: "Get your referral code",
+          responses: { "200": { description: "Referral code and share message" } },
+        },
+      },
+      "/v1/referral/stats": {
+        get: {
+          summary: "Referral earnings stats",
+          responses: { "200": { description: "Earnings by level" } },
+        },
+      },
+      "/v1/referral/withdraw": {
+        post: {
+          summary: "Withdraw referral earnings",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["address"],
+                  properties: {
+                    address: { type: "string" },
+                    chain: { type: "string", default: "ethereum" },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Withdrawal initiated" } },
+        },
+      },
+      "/v1/tlds": {
+        get: {
+          summary: "Full TLD pricing table",
+          security: [],
+          responses: { "200": { description: "All supported TLDs with base and our prices" } },
+        },
+      },
+      "/v1/public-stats": {
+        get: {
+          summary: "Public registered agents and domains count",
+          security: [],
+          responses: { "200": { description: "Stats" } },
+        },
+      },
+      "/v1/leaderboard": {
+        get: {
+          summary: "Top agents by domains registered",
+          security: [],
+          responses: { "200": { description: "Leaderboard and referral earnings" } },
+        },
+      },
+      "/v1/gossip": {
+        get: {
+          summary: "Referral program info and network overview",
+          security: [],
+          responses: { "200": { description: "Commission details, Purple Flea network links" } },
+        },
+      },
+    },
+  })
+);
+
 // ─── /stats and /public-stats aliases (no auth) — for economy dashboard ───
 app.get("/stats", (c) => c.redirect("/v1/public-stats", 301));
 app.get("/public-stats", (c) => c.redirect("/v1/public-stats", 301));
