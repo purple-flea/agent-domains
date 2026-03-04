@@ -729,6 +729,78 @@ app.get("/sitemap.xml", (c) => {
   return c.text(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://domains.purpleflea.com/</loc></url><url><loc>https://domains.purpleflea.com/v1/gossip</loc></url><url><loc>https://domains.purpleflea.com/llms.txt</loc></url></urlset>`);
 });
 
+// ─── Public WHOIS lookup (no auth) ───
+app.get("/v1/whois/:name", async (c) => {
+  c.header("Cache-Control", "public, max-age=300");
+  const rawName = c.req.param("name").toLowerCase().trim();
+  if (!rawName || rawName.length < 3) {
+    return c.json({ error: "invalid_domain", message: "Provide a valid domain name (e.g., /v1/whois/example.com)" }, 400);
+  }
+
+  // Check our platform registry first
+  const owned = sqlite.prepare("SELECT * FROM domains WHERE domain_name = ? LIMIT 1").get(rawName) as any;
+  if (owned) {
+    return c.json({
+      domain: rawName,
+      registered: true,
+      registrar: "Purple Flea (via Njalla)",
+      registrar_url: "https://domains.purpleflea.com",
+      registered_at: new Date(owned.registered_at * 1000).toISOString(),
+      expires_at: owned.expires_at ? new Date(owned.expires_at * 1000).toISOString() : null,
+      status: owned.status ?? "active",
+      source: "purple_flea_registry",
+      manage: "POST /v1/auth/register + manage via /v1/domains",
+    });
+  }
+
+  // RDAP public lookup
+  const tld = rawName.split(".").pop() ?? "";
+  const rdapEndpoints: Record<string, string> = {
+    com: "https://rdap.verisign.com/com/v1",
+    net: "https://rdap.verisign.com/net/v1",
+    org: "https://rdap.publicinterestregistry.org/rdap",
+    io: "https://rdap.nic.io",
+    ai: "https://rdap.nic.ai",
+    xyz: "https://rdap.nic.xyz",
+    dev: "https://rdap.nic.dev",
+    gg: "https://rdap.nic.gg",
+    fi: "https://rdap.fi",
+  };
+  const rdapBase = rdapEndpoints[tld];
+  if (!rdapBase) {
+    return c.json({
+      domain: rawName, registered: null,
+      message: `RDAP not supported for .${tld} — check https://who.is/${rawName}`,
+      purple_flea_registered: false,
+      register_here: "https://domains.purpleflea.com",
+    });
+  }
+
+  try {
+    const resp = await fetch(`${rdapBase}/domain/${rawName}`, {
+      headers: { Accept: "application/rdap+json" },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (resp.status === 404) {
+      return c.json({ domain: rawName, registered: false, message: "Domain not registered — available!", source: "rdap", register_here: "https://domains.purpleflea.com" });
+    }
+    const rdap = await resp.json() as Record<string, unknown>;
+    const events = (rdap.events as { eventAction: string; eventDate: string }[] | undefined) ?? [];
+    return c.json({
+      domain: rawName,
+      registered: true,
+      registered_at: events.find(e => e.eventAction === "registration")?.eventDate ?? null,
+      expires_at: events.find(e => e.eventAction === "expiration")?.eventDate ?? null,
+      last_changed: events.find(e => e.eventAction === "last changed")?.eventDate ?? null,
+      status: rdap.status,
+      source: "rdap",
+      purple_flea_registered: false,
+    });
+  } catch (err: any) {
+    return c.json({ domain: rawName, registered: null, error: "lookup_timeout", message: err.message, fallback: `https://who.is/${rawName}` });
+  }
+});
+
 app.route("/v1", v1);
 
 const port = parseInt(process.env.PORT || "3007", 10);
