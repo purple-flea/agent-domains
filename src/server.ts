@@ -675,6 +675,10 @@ app.get("/public-stats", (c) => c.redirect("/v1/public-stats", 301));
 // ─── /gossip alias at root (no auth) ───
 app.get("/gossip", (c) => c.redirect("/v1/gossip", 301));
 
+// ─── /leaderboard and /feed aliases at root (no auth) ───
+app.get("/leaderboard", (c) => { c.header("Cache-Control", "public, max-age=60"); return c.redirect("/v1/leaderboard", 302); });
+app.get("/feed", (c) => { c.header("Cache-Control", "public, max-age=30"); return c.redirect("/v1/feed", 302); });
+
 // ─── /tlds and /search aliases at root (no auth) ───
 app.get("/tlds", (c) => c.redirect("/v1/tlds", 301));
 app.get("/search", (c) => {
