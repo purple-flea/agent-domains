@@ -56,6 +56,7 @@ check GET /favicon.ico "favicon" "" 204
 check GET /ping "ping"
 check GET /v1/leaderboard "leaderboard"
 check GET /v1/feed "activity feed"
+check GET /v1/auctions "domain auctions"
 
 echo ""
 echo "--- Auth endpoints return 401 without token ---"
