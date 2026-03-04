@@ -58,6 +58,7 @@ check GET /v1/leaderboard "leaderboard"
 check GET /v1/feed "activity feed"
 check GET /v1/auctions "domain auctions"
 check GET "/v1/domains/value?name=defi.agent" "domain valuation"
+check GET "/v1/domains/suggest?keyword=defi&style=agent" "domain name suggester"
 
 echo ""
 echo "--- Auth endpoints return 401 without token ---"

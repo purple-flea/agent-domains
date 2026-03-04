@@ -175,6 +175,111 @@ v1.get("/domains/value", (c) => {
   });
 });
 
+// ─── Domain Name Suggester (public, no auth, 30s cache — MUST be before /domains route) ───
+// Given a keyword, returns 15 domain name variations with scoring and availability hints
+
+v1.get("/domains/suggest", (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+
+  const keyword = (c.req.query("keyword") || "").toLowerCase().trim().replace(/[^a-z0-9-]/g, "");
+  const style = c.req.query("style") ?? "all"; // "short" | "descriptive" | "agent" | "all"
+
+  if (!keyword || keyword.length < 2) {
+    return c.json({
+      error: "missing_keyword",
+      message: "Provide ?keyword=defi (or ai, trade, bot, etc.)",
+      example: "/v1/domains/suggest?keyword=defi&style=agent",
+      styles: ["short", "descriptive", "agent", "all"],
+    }, 400);
+  }
+
+  const tlds = [
+    { tld: "agent", score: 95, price_eur: 5,  note: "Best for AI agents" },
+    { tld: "ai",    score: 90, price_eur: 12, note: "Premium AI domain" },
+    { tld: "bot",   score: 80, price_eur: 3,  note: "Bot-focused" },
+    { tld: "trade", score: 85, price_eur: 8,  note: "Trading domain" },
+    { tld: "defi",  score: 88, price_eur: 6,  note: "DeFi ecosystem" },
+    { tld: "io",    score: 65, price_eur: 35, note: "Popular for tech" },
+    { tld: "xyz",   score: 50, price_eur: 2,  note: "Budget option" },
+    { tld: "app",   score: 70, price_eur: 10, note: "App-focused" },
+    { tld: "dev",   score: 68, price_eur: 9,  note: "Developer brand" },
+  ];
+
+  const labels: { label: string; style: string; note: string }[] = [
+    { label: keyword, style: "exact", note: "Exact match" },
+  ];
+
+  if (style === "all" || style === "short") {
+    if (keyword.length > 5) labels.push({ label: keyword.slice(0, 5), style: "short", note: "Truncated (5 chars)" });
+    if (keyword.length > 4) labels.push({ label: keyword.slice(0, 4), style: "short", note: "Truncated (4 chars)" });
+    const noVowels = keyword.replace(/[aeiou]/g, "").slice(0, 6);
+    if (noVowels.length >= 3 && noVowels !== keyword) labels.push({ label: noVowels, style: "short", note: "No vowels" });
+  }
+
+  if (style === "all" || style === "descriptive") {
+    for (const pfx of ["my", "get", "use"]) labels.push({ label: `${pfx}${keyword}`, style: "descriptive", note: `"${pfx}" prefix` });
+    for (const sfx of ["hq", "app", "hub"]) labels.push({ label: `${keyword}${sfx}`, style: "descriptive", note: `"${sfx}" suffix` });
+    labels.push({ label: `${keyword}-agent`, style: "descriptive", note: "Agent suffix" });
+    labels.push({ label: `${keyword}-ai`, style: "descriptive", note: "AI suffix" });
+  }
+
+  if (style === "all" || style === "agent") {
+    labels.push({ label: `${keyword}agent`, style: "agent", note: "Agent suffix" });
+    labels.push({ label: `agent${keyword}`, style: "agent", note: "Agent prefix" });
+    labels.push({ label: `${keyword}bot`, style: "agent", note: "Bot suffix" });
+    labels.push({ label: `${keyword}ai`, style: "agent", note: "AI suffix" });
+  }
+
+  const scoredLabels = labels.map(l => {
+    const len = l.label.length;
+    const lengthScore = len <= 3 ? 100 : len <= 5 ? 80 : len <= 8 ? 60 : len <= 12 ? 40 : 20;
+    const penalty = (l.label.includes("-") ? 5 : 0) + (/\d/.test(l.label) ? 3 : 0);
+    return { ...l, label_score: Math.max(0, lengthScore - penalty) };
+  });
+
+  const topTlds = style === "agent"
+    ? tlds.filter(t => ["agent", "ai", "bot"].includes(t.tld))
+    : tlds.slice(0, 6);
+
+  const suggestions = [];
+  for (const l of scoredLabels.slice(0, 8)) {
+    for (const tld of topTlds.slice(0, 3)) {
+      const domainName = `${l.label}.${tld.tld}`;
+      const compositeScore = Math.round((l.label_score * 0.5) + (tld.score * 0.5));
+      suggestions.push({
+        domain: domainName,
+        label: l.label,
+        tld: tld.tld,
+        style: l.style,
+        note: l.note,
+        score: compositeScore,
+        estimated_price_eur: tld.price_eur,
+        category: compositeScore >= 80 ? "premium" : compositeScore >= 60 ? "standard" : "budget",
+        tld_note: tld.note,
+        register: `POST /v1/domains/register { "domain": "${domainName}" }`,
+        check_availability: `GET /v1/search?name=${domainName}`,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  const unique = suggestions
+    .filter(s => { if (seen.has(s.domain)) return false; seen.add(s.domain); return true; })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 15);
+
+  return c.json({
+    keyword,
+    style,
+    suggestion_count: unique.length,
+    suggestions: unique,
+    top_pick: unique[0] ?? null,
+    tip: "Use ?style=agent for AI-agent names, ?style=short for short names, ?style=descriptive for prefixed variants",
+    register_tip: "POST /v1/domains/register { domain: '...' } to claim your domain (auth required)",
+    updated: new Date().toISOString(),
+  });
+});
+
 v1.route("/domains", domainsRoutes);
 v1.route("/dns", dnsRoutes);
 v1.route("/referral", referralRoutes);
