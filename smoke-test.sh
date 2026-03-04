@@ -1,6 +1,6 @@
 #!/bin/bash
 # Domains Smoke Test — checks all public endpoints return 200
-# Usage: ./domains-smoke-test.sh [BASE_URL]
+# Usage: ./smoke-test.sh [BASE_URL]
 # Default BASE_URL: http://localhost:3004
 
 BASE_URL="${1:-http://localhost:3004}"
@@ -40,11 +40,10 @@ echo ""
 
 echo "--- Public endpoints ---"
 check GET /health "health check"
-check GET /gossip "gossip"
-check GET /public-stats "public stats"
-check GET /tlds "TLD pricing table"
-check GET "/search?name=example.com" "domain search"
-check GET "/search?name=purpleflea&tlds=com,io,ai" "multi-TLD search"
+check GET /v1/gossip "gossip"
+check GET /v1/public-stats "public stats"
+check GET /v1/tlds "TLD pricing table"
+check GET "/v1/search?name=example.com" "domain search"
 check GET /network "network"
 check GET /changelog "changelog"
 check GET /robots.txt "robots.txt"
@@ -55,12 +54,14 @@ check GET /openapi.json "openapi spec"
 check GET /llms.txt "llms.txt"
 check GET /favicon.ico "favicon" "" 204
 check GET /ping "ping"
+check GET /v1/leaderboard "leaderboard"
+check GET /v1/feed "activity feed"
 
 echo ""
 echo "--- Auth endpoints return 401 without token ---"
-check GET /wallet/balance "balance (no auth)" "" 401
-check POST /domains/purchase "purchase (no auth)" '{"domain":"test.com"}' 401
-check GET /domains "my domains (no auth)" "" 401
+check GET /v1/auth/account "account (no auth)" "" 401
+check POST /v1/domains/register "register domain (no auth)" '{"domain":"test.com"}' 401
+check GET /v1/domains "my domains (no auth)" "" 401
 
 echo ""
 echo "--- 404 handling ---"

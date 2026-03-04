@@ -284,6 +284,92 @@ v1.get("/gossip", (c) => {
   });
 });
 
+// ─── Portfolio Value Estimator (public, no auth, 5min cache) ───
+// Heuristic domain value estimates based on TLD premium, name length, and keywords
+v1.get("/portfolio-value", async (c) => {
+  c.header("Cache-Control", "public, max-age=300");
+
+  // TLD base multipliers (relative premium vs .xyz baseline of 1.0)
+  const TLD_PREMIUMS: Record<string, number> = {
+    ".com": 20, ".io": 8, ".ai": 10, ".dev": 5, ".app": 4, ".xyz": 1,
+    ".net": 6, ".org": 4, ".co": 5, ".sh": 3, ".finance": 3,
+    ".money": 2, ".fund": 2, ".trade": 2, ".tech": 2, ".gg": 3,
+  };
+  const BASE_VALUE_USD = 15; // baseline value for a random .xyz domain
+
+  // High-value keywords that increase domain value
+  const HOT_KEYWORDS = ["ai", "agent", "gpt", "llm", "defi", "crypto", "pay", "finance", "trade", "swap",
+    "wallet", "nft", "dao", "web3", "chain", "base", "sol", "btc", "eth", "usdc",
+    "bot", "auto", "yield", "earn", "money", "invest", "fund", "hedge", "quant"];
+
+  // Query registered domains — public data (domain_name only, no owner info)
+  const rawDomains = sqlite.prepare("SELECT domain_name FROM domains ORDER BY registered_at DESC LIMIT 100")
+    .all() as Array<{ domain_name: string }>;
+  const allDomains = rawDomains.map((d: { domain_name: string }) => {
+    const parts = d.domain_name.split(".");
+    const tld = parts.length >= 2 ? `.${parts.slice(1).join(".")}` : ".xyz";
+    return { name: parts[0] ?? d.domain_name, tld, full: d.domain_name };
+  });
+
+  if (allDomains.length === 0) {
+    return c.json({ total_domains: 0, total_estimated_value_usd: 0, domains: [], note: "No domains registered yet." });
+  }
+
+  let totalValueUsd = 0;
+  const valuedDomains = allDomains.map((d: { name: string; tld: string; full?: string }) => {
+    const tld = d.tld.startsWith(".") ? d.tld : `.${d.tld}`;
+    const nameLower = d.name.toLowerCase();
+    const fullDomain = d.full ?? `${nameLower}${tld}`;
+
+    // TLD premium
+    const tldMultiplier = TLD_PREMIUMS[tld] ?? 1;
+
+    // Length premium: shorter = more valuable
+    const lengthMultiplier = nameLower.length <= 3 ? 5 :
+                             nameLower.length <= 5 ? 2.5 :
+                             nameLower.length <= 8 ? 1.5 : 1.0;
+
+    // Keyword bonus: each hot keyword adds 50% value
+    let keywordBonus = 1;
+    for (const kw of HOT_KEYWORDS) {
+      if (nameLower.includes(kw)) { keywordBonus += 0.5; }
+    }
+
+    // Numeric-only names have lower value (hard to brand)
+    const numericPenalty = /^\d+$/.test(nameLower) ? 0.5 : 1;
+
+    const estimatedValue = Math.round(BASE_VALUE_USD * tldMultiplier * lengthMultiplier * keywordBonus * numericPenalty);
+    totalValueUsd += estimatedValue;
+
+    return {
+      domain: fullDomain,
+      estimated_value_usd: estimatedValue,
+      factors: {
+        tld_premium: `${tldMultiplier}x`,
+        length_chars: nameLower.length,
+        length_bonus: `${lengthMultiplier}x`,
+        keyword_bonus: `${keywordBonus.toFixed(1)}x`,
+      },
+    };
+  });
+
+  // Sort by estimated value descending
+  valuedDomains.sort((a: { estimated_value_usd: number }, b: { estimated_value_usd: number }) => b.estimated_value_usd - a.estimated_value_usd);
+
+  return c.json({
+    note: "Heuristic estimates only. Actual domain value depends on buyer demand and negotiation.",
+    methodology: "TLD premium × length bonus × keyword multiplier × base value ($15 USD)",
+    total_domains: valuedDomains.length,
+    total_estimated_value_usd: totalValueUsd,
+    avg_value_usd: Math.round(totalValueUsd / valuedDomains.length),
+    top_domains: valuedDomains.slice(0, 10),
+    all_domains: valuedDomains,
+    register_domain: "POST /v1/domains/register to add domains to your portfolio",
+    search: "GET /v1/search?name=myproject to check availability",
+    updated: new Date().toISOString(),
+  });
+});
+
 v1.get("/docs", (c) => c.json({
   version: "1.0.0",
   auth: {
@@ -588,6 +674,60 @@ app.get("/public-stats", (c) => c.redirect("/v1/public-stats", 301));
 
 // ─── /gossip alias at root (no auth) ───
 app.get("/gossip", (c) => c.redirect("/v1/gossip", 301));
+
+// ─── /tlds and /search aliases at root (no auth) ───
+app.get("/tlds", (c) => c.redirect("/v1/tlds", 301));
+app.get("/search", (c) => {
+  const qs = c.req.url.includes("?") ? "?" + c.req.url.split("?")[1] : "";
+  return c.redirect("/v1/search" + qs, 301);
+});
+
+// ─── /network — Purple Flea service directory ───
+const PURPLEFLEA_NETWORK = {
+  name: "Purple Flea",
+  tagline: "The AI-native financial services platform",
+  website: "https://purpleflea.com",
+  for_agents: true,
+  services: [
+    { name: "Casino", url: "https://casino.purpleflea.com", register: "POST /api/v1/auth/register", gossip: "/api/v1/gossip", llms: "/llms.txt" },
+    { name: "Trading", url: "https://trading.purpleflea.com", register: "POST /v1/auth/register", gossip: "/v1/gossip", llms: "/llms.txt" },
+    { name: "Wallet", url: "https://wallet.purpleflea.com", register: "POST /v1/auth/register", gossip: "/v1/gossip", llms: "/llms.txt" },
+    { name: "Domains", url: "https://domains.purpleflea.com", register: "POST /v1/auth/register", gossip: "/v1/gossip", llms: "/llms.txt" },
+  ],
+  referral: "All services have 3-level referral programs. Embed your referral code to earn passive income.",
+  discovery: "GET /.well-known/purpleflea.json from any service to discover all services",
+};
+
+app.get("/network", (c) => c.json(PURPLEFLEA_NETWORK));
+app.get("/.well-known/purpleflea.json", (c) => c.json(PURPLEFLEA_NETWORK));
+app.get("/.well-known/agent.json", (c) => c.json({
+  service: "agent-domains",
+  version: "1.0.0",
+  capabilities: ["domain-search", "registration", "dns-management", "privacy"],
+  register: "POST /v1/auth/register",
+  docs: "/llms.txt",
+}));
+
+// ─── /changelog ───
+app.get("/changelog", (c) => c.json({
+  service: "agent-domains",
+  changelog: [
+    { version: "1.3.0", date: "2026-03-04", changes: ["Added /leaderboard, /feed, /stats endpoints", "Added auto-renew toggle", "Bulk domain check"] },
+    { version: "1.2.0", date: "2026-02-26", changes: ["3-level referral chains", "Multi-TLD search", "DNS management improvements"] },
+    { version: "1.1.0", date: "2026-02-22", changes: ["Rate limiting", "Deposit monitoring", "Health check upgrade"] },
+    { version: "1.0.0", date: "2026-02-20", changes: ["Initial release: domain search, register, DNS management, referrals"] },
+  ],
+}));
+
+// ─── robots.txt and sitemap.xml ───
+app.get("/robots.txt", (c) => {
+  c.header("Content-Type", "text/plain");
+  return c.text("User-agent: *\nAllow: /\nSitemap: https://domains.purpleflea.com/sitemap.xml\n");
+});
+app.get("/sitemap.xml", (c) => {
+  c.header("Content-Type", "application/xml");
+  return c.text(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://domains.purpleflea.com/</loc></url><url><loc>https://domains.purpleflea.com/v1/gossip</loc></url><url><loc>https://domains.purpleflea.com/llms.txt</loc></url></urlset>`);
+});
 
 app.route("/v1", v1);
 

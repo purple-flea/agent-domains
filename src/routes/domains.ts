@@ -273,6 +273,55 @@ app.post("/register", async (c) => {
   }, 201);
 });
 
+// ─── Expiring domains (auth) ───
+app.get("/expiring", (c) => {
+  const agentId = c.get("agentId") as string;
+  const daysParam = Math.min(parseInt(c.req.query("days") || "90", 10), 365);
+  const nowTs = Math.floor(Date.now() / 1000);
+  const cutoffTs = nowTs + daysParam * 86400;
+
+  const expiring = db.select().from(schema.domains)
+    .where(and(
+      eq(schema.domains.agentId, agentId),
+      sql`${schema.domains.expiresAt} IS NOT NULL AND ${schema.domains.expiresAt} <= ${cutoffTs} AND ${schema.domains.expiresAt} > ${nowTs}`
+    ))
+    .all();
+
+  const enriched = expiring
+    .sort((a, b) => (a.expiresAt ?? 0) - (b.expiresAt ?? 0))
+    .map(d => {
+      const expiresTs = d.expiresAt ?? 0;
+      const daysLeft = Math.max(0, Math.floor((expiresTs - nowTs) / 86400));
+      return {
+        domain_id: d.id,
+        domain: d.domainName,
+        expires_at: new Date(expiresTs * 1000).toISOString(),
+        days_remaining: daysLeft,
+        auto_renew: d.autoRenew === 1,
+        urgency: daysLeft <= 7 ? "critical" : daysLeft <= 30 ? "high" : "moderate",
+        action: d.autoRenew === 1
+          ? "Auto-renew is ON — domain will renew automatically"
+          : `PUT /v1/domains/${d.id}/auto-renew { "enabled": true } to enable auto-renew`,
+      };
+    });
+
+  const critical = enriched.filter(d => d.urgency === "critical").length;
+  const urgent = enriched.filter(d => d.urgency === "high").length;
+
+  return c.json({
+    total_expiring_in_days: daysParam,
+    count: enriched.length,
+    critical_count: critical,
+    high_count: urgent,
+    domains: enriched,
+    tip: critical > 0
+      ? `${critical} domain(s) expire in 7 days! Enable auto-renew or renew manually immediately.`
+      : enriched.length === 0
+      ? `No domains expiring in the next ${daysParam} days`
+      : `${enriched.length} domain(s) expiring in the next ${daysParam} days`,
+  });
+});
+
 // ─── List agent's domains ───
 app.get("/", (c) => {
   const agentId = c.get("agentId") as string;
