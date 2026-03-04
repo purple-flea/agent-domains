@@ -114,6 +114,67 @@ app.get("/", (c) => c.json({
 
 const v1 = new Hono<AppEnv>();
 v1.route("/auth", authRoutes);
+
+// ─── Domain Valuation (public, 30s cache — MUST be registered before /domains route) ───
+v1.get("/domains/value", (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+  const name = c.req.query("name") || "";
+
+  if (!name || name.length < 2) {
+    return c.json({ error: "missing_name", message: "Provide ?name=example.agent", example: "/v1/domains/value?name=defi.agent" }, 400);
+  }
+
+  const parts = name.toLowerCase().split(".");
+  const tld = parts.length > 1 ? parts.slice(1).join(".") : "";
+  const label = parts[0];
+
+  const tldScore: Record<string, number> = {
+    "agent": 95, "ai": 90, "bot": 80, "trade": 85, "defi": 88,
+    "eth": 85, "crypto": 75, "dao": 80, "nft": 70, "web3": 78,
+    "io": 65, "com": 60, "xyz": 50, "app": 70, "dev": 68,
+  };
+  const tldVal = tldScore[tld] ?? 40;
+  const len = label.length;
+  const lengthScore = len <= 3 ? 100 : len <= 5 ? 80 : len <= 8 ? 60 : len <= 12 ? 40 : 20;
+  const premiumKeywords = ["defi", "ai", "trade", "swap", "agent", "bot", "dao", "nft", "wallet", "yield", "stake", "earn", "crypto", "pay", "send", "lend", "borrow"];
+  const keywordBonus = premiumKeywords.some(kw => label.includes(kw)) ? 30 : 0;
+  const hasHyphen = label.includes("-");
+  const numericPct = (label.match(/\d/g) || []).length / Math.max(label.length, 1);
+  const penalty = (hasHyphen ? 10 : 0) + (numericPct > 0.5 ? 15 : numericPct > 0 ? 5 : 0);
+  const vowels = (label.match(/[aeiou]/g) || []).length / Math.max(label.length, 1);
+  const pronounceScore = vowels > 0.2 && vowels < 0.6 ? 10 : 0;
+
+  const composite = Math.min(100, Math.max(0,
+    (tldVal * 0.35) + (lengthScore * 0.35) + (keywordBonus * 0.20) - (penalty * 0.10) + pronounceScore
+  ));
+  const basePrice = tld === "agent" ? 5 : tld === "ai" ? 10 : tld === "eth" ? 15 : 2;
+  const estimatedValue = Math.round(basePrice * (composite / 50) * 100) / 100;
+  const category = composite >= 80 ? "premium" : composite >= 60 ? "standard" : composite >= 40 ? "budget" : "low-value";
+
+  return c.json({
+    domain: name,
+    label,
+    tld: tld || null,
+    valuation: {
+      score: Math.round(composite),
+      category,
+      estimated_market_value_usd: estimatedValue,
+      floor_price_usd: basePrice,
+      premium_multiple: Math.round((estimatedValue / basePrice) * 10) / 10,
+    },
+    factors: {
+      tld_quality: `${tldVal}/100 — .${tld || "unknown"}`,
+      label_length: `${lengthScore}/100 — ${len} chars`,
+      keyword_premium: keywordBonus > 0 ? `+${keywordBonus}pts` : "none",
+      penalties: penalty > 0 ? `-${penalty}pts` : "none",
+      pronounceability: pronounceScore > 0 ? `+${pronounceScore}pts` : "neutral",
+    },
+    note: "Algorithmic estimate. Actual value depends on market demand.",
+    register: `POST /v1/domains/register { name: "${name}" } to claim this domain`,
+    marketplace: "GET /v1/auctions to see domains for sale",
+  });
+});
+
 v1.route("/domains", domainsRoutes);
 v1.route("/dns", dnsRoutes);
 v1.route("/referral", referralRoutes);
