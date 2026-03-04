@@ -116,6 +116,32 @@ CREATE INDEX IF NOT EXISTS idx_dns_agent ON dns_records(agent_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_agent ON transactions(agent_id);
 CREATE INDEX IF NOT EXISTS idx_deposits_agent ON deposits(agent_id);
 CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
+
+CREATE TABLE IF NOT EXISTS auctions (
+  id TEXT PRIMARY KEY,
+  domain_id TEXT NOT NULL REFERENCES domains(id),
+  seller_id TEXT NOT NULL REFERENCES agents(id),
+  min_bid_usd REAL NOT NULL,
+  current_bid_usd REAL,
+  current_bidder_id TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  ends_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS auction_bids (
+  id TEXT PRIMARY KEY,
+  auction_id TEXT NOT NULL REFERENCES auctions(id),
+  bidder_id TEXT NOT NULL REFERENCES agents(id),
+  bid_usd REAL NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_auctions_domain ON auctions(domain_id);
+CREATE INDEX IF NOT EXISTS idx_auctions_seller ON auctions(seller_id);
+CREATE INDEX IF NOT EXISTS idx_auctions_status ON auctions(status);
+CREATE INDEX IF NOT EXISTS idx_bids_auction ON auction_bids(auction_id);
+CREATE INDEX IF NOT EXISTS idx_bids_bidder ON auction_bids(bidder_id);
 `;
 
 export function runMigrations() {

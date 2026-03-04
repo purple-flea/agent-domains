@@ -4,10 +4,13 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { runMigrations, db, sqlite } from "./db/index.js";
-import { agents, domains } from "./db/schema.js";
-import { sql, desc } from "drizzle-orm";
+import { agents, domains, auctions, auctionBids } from "./db/schema.js";
+import { sql, desc, eq, and, gt } from "drizzle-orm";
+import { randomUUID } from "crypto";
 import { TLD_PRICES } from "./njalla.js";
 import authRoutes from "./routes/auth.js";
+import { agentAuth } from "./middleware/auth.js";
+import type { AppEnv } from "./types.js";
 import domainsRoutes from "./routes/domains.js";
 import dnsRoutes from "./routes/dns.js";
 import referralRoutes from "./routes/referral.js";
@@ -109,11 +112,181 @@ app.get("/", (c) => c.json({
   for_ai_agents: true,
 }));
 
-const v1 = new Hono();
+const v1 = new Hono<AppEnv>();
 v1.route("/auth", authRoutes);
 v1.route("/domains", domainsRoutes);
 v1.route("/dns", dnsRoutes);
 v1.route("/referral", referralRoutes);
+
+// ─── Domain Auctions ─────────────────────────────────────────────────────────
+
+// GET /v1/auctions — list open auctions (public, 30s cache)
+v1.get("/auctions", (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+  const now = Math.floor(Date.now() / 1000);
+
+  // Auto-expire ended auctions
+  db.update(auctions)
+    .set({ status: "expired" })
+    .where(and(eq(auctions.status, "open"), sql`${auctions.endsAt} < ${now}`))
+    .run();
+
+  const open = db.select({
+    id: auctions.id,
+    domainId: auctions.domainId,
+    domainName: domains.domainName,
+    sellerId: auctions.sellerId,
+    minBidUsd: auctions.minBidUsd,
+    currentBidUsd: auctions.currentBidUsd,
+    currentBidderId: auctions.currentBidderId,
+    status: auctions.status,
+    endsAt: auctions.endsAt,
+    createdAt: auctions.createdAt,
+  }).from(auctions)
+    .innerJoin(domains, eq(auctions.domainId, domains.id))
+    .where(eq(auctions.status, "open"))
+    .orderBy(desc(auctions.createdAt))
+    .limit(50)
+    .all();
+
+  return c.json({
+    total: open.length,
+    auctions: open.map(a => ({
+      ...a,
+      ends_in_seconds: Math.max(0, a.endsAt - now),
+      current_bid_usd: a.currentBidUsd ?? null,
+      next_min_bid_usd: a.currentBidUsd ? Math.round((a.currentBidUsd * 1.05) * 100) / 100 : a.minBidUsd,
+    })),
+    bid: "POST /v1/auctions/:id/bid { bid_usd } to place a bid",
+    list: "POST /v1/auctions to list your domain for sale",
+  });
+});
+
+// POST /v1/auctions — list a domain for auction (auth)
+v1.post("/auctions", agentAuth, async (c) => {
+  const agentId = c.get("agentId") as string;
+  const body = await c.req.json().catch(() => ({}));
+  const { domain_id, min_bid_usd, duration_hours = 24 } = body;
+
+  if (!domain_id || !min_bid_usd || typeof min_bid_usd !== "number" || min_bid_usd < 0.50) {
+    return c.json({ error: "invalid_params", message: "Provide domain_id and min_bid_usd (min $0.50)" }, 400);
+  }
+  if (duration_hours < 1 || duration_hours > 168) {
+    return c.json({ error: "invalid_duration", message: "duration_hours must be 1-168 (max 1 week)" }, 400);
+  }
+
+  // Verify domain ownership
+  const domain = db.select().from(domains)
+    .where(and(eq(domains.id, domain_id), eq(domains.agentId, agentId), eq(domains.status, "active")))
+    .get();
+  if (!domain) return c.json({ error: "domain_not_found", message: "Domain not found or not owned by you" }, 404);
+
+  // Check no existing open auction for this domain
+  const existing = db.select({ id: auctions.id }).from(auctions)
+    .where(and(eq(auctions.domainId, domain_id), eq(auctions.status, "open")))
+    .get();
+  if (existing) return c.json({ error: "already_listed", message: "Domain already has an open auction" }, 409);
+
+  const now = Math.floor(Date.now() / 1000);
+  const auctionId = `auc_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+
+  db.insert(auctions).values({
+    id: auctionId,
+    domainId: domain_id,
+    sellerId: agentId,
+    minBidUsd: min_bid_usd,
+    status: "open",
+    endsAt: now + Math.floor(duration_hours * 3600),
+  }).run();
+
+  return c.json({
+    auction_id: auctionId,
+    domain: domain.domainName,
+    min_bid_usd,
+    ends_at: new Date((now + Math.floor(duration_hours * 3600)) * 1000).toISOString(),
+    status: "open",
+    message: "Domain listed for auction! Other agents can now bid.",
+    bid_url: `POST /v1/auctions/${auctionId}/bid`,
+    cancel: `DELETE /v1/auctions/${auctionId}`,
+  }, 201);
+});
+
+// POST /v1/auctions/:id/bid — place a bid (auth)
+v1.post("/auctions/:id/bid", agentAuth, async (c) => {
+  const agentId = c.get("agentId") as string;
+  const auctionId = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+  const { bid_usd } = body;
+
+  if (!bid_usd || typeof bid_usd !== "number" || bid_usd < 0.50) {
+    return c.json({ error: "invalid_bid", message: "bid_usd must be a number >= $0.50" }, 400);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const auction = db.select().from(auctions).where(eq(auctions.id, auctionId)).get();
+  if (!auction) return c.json({ error: "not_found", message: "Auction not found" }, 404);
+  if (auction.status !== "open") return c.json({ error: "auction_closed", message: `Auction is ${auction.status}` }, 409);
+  if (auction.endsAt < now) return c.json({ error: "auction_expired", message: "Auction has ended" }, 409);
+  if (auction.sellerId === agentId) return c.json({ error: "cannot_self_bid", message: "You cannot bid on your own auction" }, 400);
+
+  const minBid = auction.currentBidUsd ? Math.round((auction.currentBidUsd * 1.05) * 100) / 100 : auction.minBidUsd;
+  if (bid_usd < minBid) {
+    return c.json({ error: "bid_too_low", message: `Minimum bid is $${minBid.toFixed(2)} (5% above current)`, min_bid_usd: minBid }, 400);
+  }
+
+  // Check bidder balance
+  const bidder = db.select({ balanceUsd: agents.balanceUsd }).from(agents).where(eq(agents.id, agentId)).get();
+  if (!bidder || bidder.balanceUsd < bid_usd) {
+    return c.json({ error: "insufficient_balance", message: `Need $${bid_usd.toFixed(2)}, have $${(bidder?.balanceUsd ?? 0).toFixed(2)}` }, 400);
+  }
+
+  const bidId = `bid_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+
+  db.transaction(() => {
+    // Record bid
+    db.insert(auctionBids).values({
+      id: bidId,
+      auctionId,
+      bidderId: agentId,
+      bidUsd: bid_usd,
+    }).run();
+
+    // Update auction with new high bid
+    db.update(auctions).set({
+      currentBidUsd: bid_usd,
+      currentBidderId: agentId,
+    }).where(eq(auctions.id, auctionId)).run();
+  });
+
+  const domain = db.select({ domainName: domains.domainName }).from(domains).where(eq(domains.id, auction.domainId)).get();
+
+  return c.json({
+    bid_id: bidId,
+    auction_id: auctionId,
+    domain: domain?.domainName,
+    your_bid_usd: bid_usd,
+    ends_at: new Date(auction.endsAt * 1000).toISOString(),
+    message: `Bid placed! You are currently the highest bidder on ${domain?.domainName}`,
+    note: "Funds are reserved when auction closes. Winner gets domain ownership transferred.",
+    watch: `GET /v1/auctions?id=${auctionId}`,
+  }, 201);
+});
+
+// DELETE /v1/auctions/:id — cancel auction (seller only, no bids)
+v1.delete("/auctions/:id", agentAuth, async (c) => {
+  const agentId = c.get("agentId") as string;
+  const auctionId = c.req.param("id");
+
+  const auction = db.select().from(auctions).where(eq(auctions.id, auctionId)).get();
+  if (!auction) return c.json({ error: "not_found", message: "Auction not found" }, 404);
+  if (auction.sellerId !== agentId) return c.json({ error: "forbidden", message: "Only the seller can cancel" }, 403);
+  if (auction.status !== "open") return c.json({ error: "already_closed", message: `Auction is ${auction.status}` }, 409);
+  if (auction.currentBidUsd) return c.json({ error: "has_bids", message: "Cannot cancel auction with bids placed" }, 409);
+
+  db.update(auctions).set({ status: "cancelled" }).where(eq(auctions.id, auctionId)).run();
+
+  return c.json({ cancelled: true, auction_id: auctionId, message: "Auction cancelled — domain is yours again" });
+});
 
 // ─── Public stats (no auth) ───
 v1.get("/public-stats", (c) => {

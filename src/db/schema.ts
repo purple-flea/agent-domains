@@ -110,3 +110,32 @@ export const deposits = sqliteTable("deposits", {
   index("idx_deposits_agent").on(t.agentId),
   index("idx_deposits_status").on(t.status),
 ]);
+
+// ─── Domain Auctions ───
+
+export const auctions = sqliteTable("auctions", {
+  id: text("id").primaryKey(),
+  domainId: text("domain_id").notNull().references(() => domains.id),
+  sellerId: text("seller_id").notNull().references(() => agents.id),
+  minBidUsd: real("min_bid_usd").notNull(),
+  currentBidUsd: real("current_bid_usd"),
+  currentBidderId: text("current_bidder_id"),
+  status: text("status").default("open").notNull(), // open | sold | cancelled | expired
+  endsAt: integer("ends_at").notNull(),
+  createdAt: integer("created_at").$defaultFn(() => Math.floor(Date.now() / 1000)).notNull(),
+}, (t) => [
+  index("idx_auctions_domain").on(t.domainId),
+  index("idx_auctions_seller").on(t.sellerId),
+  index("idx_auctions_status").on(t.status),
+]);
+
+export const auctionBids = sqliteTable("auction_bids", {
+  id: text("id").primaryKey(),
+  auctionId: text("auction_id").notNull().references(() => auctions.id),
+  bidderId: text("bidder_id").notNull().references(() => agents.id),
+  bidUsd: real("bid_usd").notNull(),
+  createdAt: integer("created_at").$defaultFn(() => Math.floor(Date.now() / 1000)).notNull(),
+}, (t) => [
+  index("idx_bids_auction").on(t.auctionId),
+  index("idx_bids_bidder").on(t.bidderId),
+]);
