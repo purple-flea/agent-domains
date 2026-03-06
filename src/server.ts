@@ -1007,8 +1007,33 @@ app.get("/openapi.json", (c) =>
   })
 );
 
+// ─── /v1/stats (no auth, 60s cache) — economy dashboard ───
+v1.get("/stats", (c) => {
+  c.header("Cache-Control", "public, max-age=60");
+  const agentResult = db.select({ count: sql<number>`count(*)` }).from(agents).get();
+  const domainResult = db.select({ count: sql<number>`count(*)` }).from(domains).get();
+  const volumeResult = db.select({ total: sql<number>`COALESCE(SUM(price_usd), 0)` }).from(domains).get();
+  let refPayouts = 0;
+  try {
+    const refResult = sqlite.prepare(
+      `SELECT COALESCE(SUM(COALESCE(commission_amount, amount_usdc, 0)), 0) as total FROM referral_earnings`
+    ).get() as { total: number } | undefined;
+    refPayouts = Math.round((refResult?.total ?? 0) * 100) / 100;
+  } catch { /* table may not exist */ }
+  const uptimeDays = Math.round((Date.now() - new Date("2026-02-20").getTime()) / 86400000 * 10) / 10;
+  return c.json({
+    service: "agent-domains",
+    total_agents: agentResult?.count ?? 0,
+    total_domains: domainResult?.count ?? 0,
+    total_volume_usd: Math.round((volumeResult?.total ?? 0) * 100) / 100,
+    total_referral_payouts_usd: refPayouts,
+    uptime_days: uptimeDays,
+    updated: new Date().toISOString(),
+  });
+});
+
 // ─── /stats and /public-stats aliases (no auth) — for economy dashboard ───
-app.get("/stats", (c) => c.redirect("/v1/public-stats", 301));
+app.get("/stats", (c) => c.redirect("/v1/stats", 301));
 app.get("/public-stats", (c) => c.redirect("/v1/public-stats", 301));
 
 // ─── /gossip alias at root (no auth) ───
