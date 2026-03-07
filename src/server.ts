@@ -345,6 +345,149 @@ v1.get("/domains/suggest", (c) => {
   });
 });
 
+// ─── Portfolio Value Estimator — agent-submitted list (public, no auth, 30s cache) ───
+// POST /v1/domains/portfolio-value — submit up to 50 domain names, get back per-domain estimates + portfolio summary
+v1.post("/domains/portfolio-value", async (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+
+  const body = await c.req.json().catch(() => ({}));
+  const { domains: inputDomains } = body as { domains?: unknown };
+
+  if (!Array.isArray(inputDomains) || inputDomains.length === 0) {
+    return c.json({
+      error: "invalid_input",
+      message: "Provide a JSON body with a non-empty \"domains\" array",
+      example: { domains: ["myagent.ai", "trading-bot.io", "alpha.agent"] },
+    }, 400);
+  }
+  if (inputDomains.length > 50) {
+    return c.json({ error: "too_many_domains", message: "Maximum 50 domains per request" }, 400);
+  }
+
+  // Validate each entry contains a dot
+  for (const d of inputDomains) {
+    if (typeof d !== "string" || !d.includes(".")) {
+      return c.json({
+        error: "invalid_domain",
+        message: `Each domain must be a string containing a dot (e.g. "example.ai"). Got: ${JSON.stringify(d)}`,
+      }, 400);
+    }
+  }
+
+  // TLD base registration prices (USD)
+  const TLD_BASE_PRICES: Record<string, number> = {
+    "agent":   80,
+    "ai":     120,
+    "io":      35,
+    "bot":     45,
+    "trade":   30,
+    "defi":    25,
+    "crypto":  20,
+    "finance": 28,
+    "xyz":      8,
+    "app":     18,
+    "dev":     12,
+    "com":     15,
+    "net":     12,
+  };
+  const UNKNOWN_TLD_BASE = 5;
+
+  // AI / agent keyword list for premium detection
+  const AI_KEYWORDS = ["ai", "agent", "bot", "algo", "trade", "defi", "crypto", "finance", "auto"];
+
+  const now = new Date().toISOString();
+  const tldBreakdown: Record<string, number> = {};
+  let totalEstimatedValue = 0;
+  let mostValuableName = "";
+  let mostValuableValue = -1;
+
+  const domainResults = (inputDomains as string[]).map((raw) => {
+    const name = raw.toLowerCase().trim();
+    const dotIndex = name.indexOf(".");
+    const label = name.slice(0, dotIndex);
+    const tld = name.slice(dotIndex + 1);
+
+    // Accumulate TLD breakdown
+    tldBreakdown[tld] = (tldBreakdown[tld] ?? 0) + 1;
+
+    const priceUsd = TLD_BASE_PRICES[tld] ?? UNKNOWN_TLD_BASE;
+
+    // Determine highest applicable premium factor
+    let premiumFactor = 1.0;
+    let notes: string[] = [];
+
+    // Length-based premium (applied to the label only, not full domain)
+    if (label.length <= 4) {
+      premiumFactor = Math.max(premiumFactor, 3.0);
+      notes.push("Ultra-short label (≤4 chars)");
+    } else if (label.length <= 6) {
+      premiumFactor = Math.max(premiumFactor, 2.0);
+      notes.push("Short label (5-6 chars)");
+    } else if (label.length <= 9) {
+      premiumFactor = Math.max(premiumFactor, 1.5);
+      notes.push("Medium label (7-9 chars)");
+    }
+
+    // AI keyword premium
+    const hasAiKeyword = AI_KEYWORDS.some((kw) => label.includes(kw));
+    if (hasAiKeyword) {
+      premiumFactor = Math.max(premiumFactor, 2.0);
+      notes.push("Contains AI/agent keyword");
+    }
+
+    // TLD-specific notes
+    if (tld === "agent") notes.push("Premium agent-space keyword");
+    else if (tld === "ai") notes.push("Short .ai domain");
+    else if (tld === "io") notes.push("Standard .io");
+    else if (tld === "bot") notes.push("Bot-focused TLD");
+    else if (TLD_BASE_PRICES[tld] === undefined) notes.push("Unknown TLD — using floor price");
+
+    // If no premium applied yet and label is a known "generic short word" heuristic
+    if (premiumFactor === 1.0) {
+      // Check if label is 3-6 chars and all alpha — simple dictionary-word heuristic
+      if (label.length >= 3 && label.length <= 6 && /^[a-z]+$/.test(label)) {
+        premiumFactor = 1.2;
+        notes.push("Generic short word");
+      }
+    }
+
+    const estimatedValueUsd = Math.round(priceUsd * premiumFactor * 100) / 100;
+    totalEstimatedValue += estimatedValueUsd;
+
+    if (estimatedValueUsd > mostValuableValue) {
+      mostValuableValue = estimatedValueUsd;
+      mostValuableName = name;
+    }
+
+    return {
+      name,
+      tld,
+      price_usd: priceUsd,
+      premium_factor: premiumFactor,
+      estimated_value_usd: estimatedValueUsd,
+      notes: notes.length > 0 ? notes.join("; ") : "Standard registration price",
+    };
+  });
+
+  const totalDomains = domainResults.length;
+  const averageValueUsd = totalDomains > 0
+    ? Math.round((totalEstimatedValue / totalDomains) * 100) / 100
+    : 0;
+
+  return c.json({
+    domains: domainResults,
+    portfolio: {
+      total_domains: totalDomains,
+      total_estimated_value_usd: Math.round(totalEstimatedValue * 100) / 100,
+      average_value_usd: averageValueUsd,
+      most_valuable: mostValuableName,
+      tld_breakdown: tldBreakdown,
+    },
+    market_note: "Estimates based on current TLD registration prices and keyword premiums. Agent-related keywords command a 1.5-3x premium in 2026.",
+    updated_at: now,
+  });
+});
+
 v1.route("/domains", domainsRoutes);
 v1.route("/dns", dnsRoutes);
 v1.route("/referral", referralRoutes);
@@ -1240,6 +1383,12 @@ app.get("/tlds", (c) => c.redirect("/v1/tlds", 301));
 app.get("/search", (c) => {
   const qs = c.req.url.includes("?") ? "?" + c.req.url.split("?")[1] : "";
   return c.redirect("/v1/search" + qs, 301);
+});
+
+// ─── /portfolio-value alias at root (POST, no auth, 30s cache) ───
+app.post("/portfolio-value", async (c) => {
+  const body = await c.req.text();
+  return c.redirect("/v1/domains/portfolio-value", 307);
 });
 
 // ─── /network — Purple Flea service directory ───
