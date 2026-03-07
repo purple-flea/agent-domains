@@ -488,6 +488,181 @@ v1.post("/domains/portfolio-value", async (c) => {
   });
 });
 
+// ─── Bulk Domain Availability Check (public, no auth, 30s cache) ───
+// GET  /v1/domains/check?names=agent.ai,trader.bot,mybot.defi
+// POST /v1/domains/check  { "domains": ["agent.ai", "trader.bot"] }
+// Up to 20 domains. Checks our DB + TLD pricing. No external API call.
+
+const CHECK_TLD_PRICES: Record<string, number> = {
+  "agent":   25,
+  "ai":      15,
+  "io":      12,
+  "bot":     20,
+  "trade":   10,
+  "defi":    10,
+  "crypto":   8,
+  "finance": 12,
+  "xyz":      5,
+  "app":      8,
+  "dev":      8,
+  "com":     15,
+  "net":     10,
+};
+
+const DOMAIN_CHECK_RE = /^[a-z0-9][a-z0-9-]*\.[a-z]+$/;
+
+async function bulkCheckDomains(rawNames: string[]): Promise<{
+  service: string;
+  checked: number;
+  available: number;
+  taken: number;
+  results: object[];
+  tip: string;
+  updated: string;
+}> {
+  // Normalise
+  const normalized = rawNames.map((n) => n.toLowerCase().trim());
+
+  // Batch query the DB for all names at once to find taken ones
+  const takenRows = db
+    .select({
+      domainName: domains.domainName,
+      agentId: agents.id,
+      registeredAt: domains.registeredAt,
+    })
+    .from(domains)
+    .leftJoin(agents, eq(agents.id, domains.agentId))
+    .all();
+
+  const takenMap = new Map<string, { agentId: string | null; registeredAt: number }>();
+  for (const row of takenRows) {
+    takenMap.set(row.domainName, { agentId: row.agentId, registeredAt: row.registeredAt });
+  }
+
+  const results: object[] = [];
+  let availableCount = 0;
+  let takenCount = 0;
+
+  for (const domainStr of normalized) {
+    // Validate format: label.tld with label >= 2 chars
+    if (!DOMAIN_CHECK_RE.test(domainStr)) {
+      results.push({
+        domain: domainStr,
+        available: false,
+        price_usd: null,
+        tld: null,
+        error: "invalid_format",
+        message: "Domain must match [a-z0-9-]+.[a-z]+ with label >= 2 chars",
+      });
+      takenCount++;
+      continue;
+    }
+
+    const dotIdx = domainStr.indexOf(".");
+    const label = domainStr.slice(0, dotIdx);
+    const tld = "." + domainStr.slice(dotIdx + 1);
+
+    if (label.length < 2) {
+      results.push({
+        domain: domainStr,
+        available: false,
+        price_usd: null,
+        tld,
+        error: "name_too_short",
+        message: "Domain name (before the dot) must be at least 2 characters",
+      });
+      takenCount++;
+      continue;
+    }
+
+    const takenEntry = takenMap.get(domainStr);
+
+    if (takenEntry) {
+      takenCount++;
+      results.push({
+        domain: domainStr,
+        available: false,
+        price_usd: null,
+        tld,
+        owner: takenEntry.agentId ?? "unknown",
+        registered_at: new Date(takenEntry.registeredAt * 1000).toISOString(),
+      });
+    } else {
+      availableCount++;
+      const priceUsd = CHECK_TLD_PRICES[tld.slice(1)] ?? null;
+      const result: Record<string, unknown> = {
+        domain: domainStr,
+        available: true,
+        price_usd: priceUsd,
+        tld,
+        register: `POST /v1/domains/register { "name": "${label}", "tld": "${tld}" }`,
+      };
+      if (priceUsd === null) {
+        result.note = "TLD not currently supported for registration";
+      }
+      results.push(result);
+    }
+  }
+
+  return {
+    service: "agent-domains",
+    checked: normalized.length,
+    available: availableCount,
+    taken: takenCount,
+    results,
+    tip: "Register available domains: POST /v1/domains/register (requires auth)",
+    updated: new Date().toISOString(),
+  };
+}
+
+v1.get("/domains/check", async (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+
+  const namesParam = c.req.query("names") || c.req.query("name") || c.req.query("domain");
+  if (!namesParam) {
+    return c.json({
+      error: "missing_names",
+      message: "Provide ?names=agent.ai,trader.bot (comma-separated, up to 20)",
+      example: "/v1/domains/check?names=agent.ai,trader.bot,mybot.defi",
+    }, 400);
+  }
+
+  const rawNames = namesParam.split(",").map((n) => n.trim()).filter(Boolean);
+
+  if (rawNames.length > 20) {
+    return c.json({ error: "too_many_domains", message: "Maximum 20 domains per request" }, 400);
+  }
+  if (rawNames.length === 0) {
+    return c.json({ error: "missing_names", message: "No domain names provided" }, 400);
+  }
+
+  const result = await bulkCheckDomains(rawNames);
+  return c.json(result);
+});
+
+v1.post("/domains/check", async (c) => {
+  c.header("Cache-Control", "public, max-age=30");
+
+  const body = await c.req.json().catch(() => ({}));
+  const { domains: domainList } = body as { domains?: unknown };
+
+  if (!Array.isArray(domainList) || domainList.length === 0) {
+    return c.json({
+      error: "invalid_input",
+      message: "Provide { \"domains\": [\"agent.ai\", \"trader.bot\"] } (up to 20)",
+      example: { domains: ["agent.ai", "trader.bot", "mybot.defi"] },
+    }, 400);
+  }
+
+  if (domainList.length > 20) {
+    return c.json({ error: "too_many_domains", message: "Maximum 20 domains per request" }, 400);
+  }
+
+  const rawNames = (domainList as unknown[]).map((d) => String(d));
+  const result = await bulkCheckDomains(rawNames);
+  return c.json(result);
+});
+
 v1.route("/domains", domainsRoutes);
 v1.route("/dns", dnsRoutes);
 v1.route("/referral", referralRoutes);
