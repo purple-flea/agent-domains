@@ -59,6 +59,8 @@ check GET /v1/feed "activity feed"
 check GET /v1/auctions "domain auctions"
 check GET "/v1/domains/value?name=defi.agent" "domain valuation"
 check GET "/v1/domains/suggest?keyword=defi&style=agent" "domain name suggester"
+check GET /v1/tlds "TLD market stats"
+check GET /v1/domains/expiring "expiring domains"
 
 echo ""
 echo "--- Auth endpoints return 401 without token ---"
